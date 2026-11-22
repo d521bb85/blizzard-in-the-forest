@@ -145,10 +145,10 @@ const notes = document.querySelectorAll<HTMLElement>("#ending [data-ending]");
 let ending: Ending = "first";
 let focusTimer: Later | null = null;
 
-// The same evening out as for the hints, for the centred end-screen card.
+// The same evening out as for the hints, for the centred site link.
 const credits = document.getElementById("credits") as HTMLElement;
-const card = credits.querySelector(".credits-card") as HTMLElement;
-const snapCredits = () => snapEven(credits, card);
+const creditLink = credits.querySelector("a") as HTMLElement;
+const snapCredits = () => snapEven(credits, creditLink);
 window.addEventListener("resize", snapCredits);
 document.fonts?.ready.then(snapCredits);
 
@@ -185,6 +185,7 @@ const onStory = (e: StoryEvent) => {
 };
 
 const showTitle = () => {
+  snapCredits();
   body.classList.add("title");
   quiet();
 };

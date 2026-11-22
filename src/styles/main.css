@@ -98,7 +98,7 @@ canvas {
   text-shadow: var(--m) var(--m) 0 rgba(8, 8, 8, 0.9), 0 0 10px rgba(0, 0, 0, 0.35);
 }
 
-/* Name and links: centred at the bottom on the end screens only. */
+/* Site link: centred at the bottom on the title and end screens. */
 #credits {
   position: fixed;
   left: 0;
@@ -110,12 +110,13 @@ canvas {
   padding: 0 0 calc(28px + env(safe-area-inset-bottom));
   pointer-events: none;
   color: #ecebe7;
-  /* Hidden (not just transparent) until an end screen shows, so it can't be clicked or tabbed to unseen. */
+  /* Hidden (not just transparent) while loading or walking, so it can't be clicked or tabbed to unseen. */
   opacity: 0;
   visibility: hidden;
   transition: opacity 0.8s ease, visibility 0s linear 0.8s;
 }
 
+body.title #credits,
 body.ended #credits,
 body.failed #credits {
   opacity: 1;
@@ -123,52 +124,22 @@ body.failed #credits {
   transition: opacity 1.6s ease, visibility 0s linear 0s;
 }
 
-/* Set by the script when centring would land the card on a half pixel. */
+/* Set by the script when centring would land the link on a half pixel. */
 #credits.nudge {
   padding-left: 1px;
 }
 
-.credits-card {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 8px 22px;
-  pointer-events: auto;
-}
-
-.credits-card .name {
-  --m: 2px;
-  margin: 0;
-  line-height: 24px;
-  white-space: nowrap;
-  /* Every glyph ends with one empty pixel; drop it so the card ends on the last letter. */
-  margin-right: calc(-1 * var(--m));
-}
-
-.credits-card .links {
-  /* As wide as the name, a link at each end: both lines are exactly the same width. */
-  align-self: stretch;
-  display: flex;
-  justify-content: space-between;
+#credits a {
+  padding: 12px 22px;
   line-height: 14px;
   white-space: nowrap;
-}
-
-.credits-card .links a {
   pointer-events: auto;
 }
 
-.credits-card .links a:last-child {
-  margin-right: calc(-1 * var(--m));
-}
-
-/*
- * The space left between the three links is an odd 47 pixels; one more pixel beside the
- * middle link makes both gaps whole, so it doesn't land on a half pixel and blur.
- */
-.credits-card .links a:nth-child(2) {
-  margin-right: var(--m);
+/* The menu cursor sits beside the words, inside the link's horizontal padding. */
+#credits a::before,
+#credits a::after {
+  left: calc(22px - 8 * var(--m));
 }
 
 /*
