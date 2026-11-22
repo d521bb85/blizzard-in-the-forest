@@ -156,10 +156,9 @@ const showEnding = (which: Ending) => {
   ending = which;
   // The end screen is still hidden: put up the words for this one before it fades in.
   for (const note of notes) note.hidden = note.dataset.ending !== which;
-  // After the last ending the way back is to the very first walk, and says so.
   const last = which === "yeti-won";
   endingScreen.classList.toggle("with-letter", last);
-  startOver.textContent = last ? "Begin again" : "Start over";
+  startOver.textContent = "Start over";
   snapCredits();
   body.classList.add("ended");
   cancel(focusTimer);
