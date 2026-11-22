@@ -1,0 +1,486 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  overscroll-behavior: none;
+  /* No text selection, magnifier or callout from long presses on phones. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  /* No pinch or double-tap zoom anywhere; taps on links still work. */
+  touch-action: none;
+}
+
+/*
+ * The pointer is drawn in the game's pixels (src/game/cursor.ts): over the scene and the
+ * end screens, an eye while looking about and felt boots while walking; everywhere else
+ * (the links and buttons, while the forest loads, and on the title screen) a snowy fir tree.
+ */
+html,
+a,
+button {
+  cursor: var(--cursor-off, default);
+}
+
+canvas,
+#ending {
+  cursor: var(--cursor, default);
+}
+
+canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#loader {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: #000;
+  transition: opacity 0.6s ease;
+  pointer-events: none;
+  z-index: 3;
+}
+
+#loader.done {
+  opacity: 0;
+}
+
+#loader .track {
+  width: min(180px, 40vw);
+  height: 1px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+#loader .bar {
+  height: 100%;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.75);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.4s ease;
+}
+
+/*
+ * Type like a console game's interface: Jersey 10, a pixel font drawn on a grid of
+ * 3/56 em (capitals are 10 of its pixels tall). --m is one of those pixels in CSS
+ * pixels; keeping it whole keeps every glyph edge on a screen pixel, so the text
+ * stays hard-edged even on 1x screens.
+ */
+:root {
+  --pixel-font: "Jersey 10", ui-monospace, monospace;
+}
+
+.pixel-type {
+  --m: 1px;
+  font-family: var(--pixel-font);
+  font-size: calc(var(--m) * 56 / 3);
+  font-weight: 400;
+  font-style: normal;
+  letter-spacing: 0;
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: grayscale;
+  font-smooth: never;
+  font-synthesis: none;
+  /* A hard drop shadow one pixel down and right, plus a faint halo so it reads over bright snow. */
+  text-shadow: var(--m) var(--m) 0 rgba(8, 8, 8, 0.9), 0 0 10px rgba(0, 0, 0, 0.35);
+}
+
+/* Name and links: centred at the bottom on the end screens only. */
+#credits {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  justify-content: center;
+  padding: 0 0 calc(28px + env(safe-area-inset-bottom));
+  pointer-events: none;
+  color: #ecebe7;
+  /* Hidden (not just transparent) until an end screen shows, so it can't be clicked or tabbed to unseen. */
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.8s ease, visibility 0s linear 0.8s;
+}
+
+body.ended #credits,
+body.failed #credits {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 1.6s ease, visibility 0s linear 0s;
+}
+
+/* Set by the script when centring would land the card on a half pixel. */
+#credits.nudge {
+  padding-left: 1px;
+}
+
+.credits-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 22px;
+  pointer-events: auto;
+}
+
+.credits-card .name {
+  --m: 2px;
+  margin: 0;
+  line-height: 24px;
+  white-space: nowrap;
+  /* Every glyph ends with one empty pixel; drop it so the card ends on the last letter. */
+  margin-right: calc(-1 * var(--m));
+}
+
+.credits-card .links {
+  /* As wide as the name, a link at each end: both lines are exactly the same width. */
+  align-self: stretch;
+  display: flex;
+  justify-content: space-between;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+.credits-card .links a {
+  pointer-events: auto;
+}
+
+.credits-card .links a:last-child {
+  margin-right: calc(-1 * var(--m));
+}
+
+/*
+ * The space left between the three links is an odd 47 pixels; one more pixel beside the
+ * middle link makes both gaps whole, so it doesn't land on a half pixel and blur.
+ */
+.credits-card .links a:nth-child(2) {
+  margin-right: var(--m);
+}
+
+/*
+ * Interactive menu items (links and screen buttons) with a stair-stepped arrow cursor,
+ * 5 by 9 pixels, beside the item in focus. ::after is the arrow; ::before, under it,
+ * is its hard shadow one pixel down and right.
+ */
+.menu-item {
+  position: relative;
+  color: rgba(236, 235, 231, 0.72);
+  text-decoration: none;
+  transition: color 0.3s steps(3);
+}
+
+.menu-item::before,
+.menu-item::after {
+  content: "";
+  position: absolute;
+  left: calc(-8 * var(--m));
+  top: calc(50% - 5 * var(--m));
+  width: calc(5 * var(--m));
+  height: calc(9 * var(--m));
+  background: currentColor;
+  clip-path: polygon(
+    0 0, 20% 0, 20% 11.11%, 40% 11.11%, 40% 22.22%, 60% 22.22%, 60% 33.33%, 80% 33.33%, 80% 44.44%,
+    100% 44.44%, 100% 55.56%, 80% 55.56%, 80% 66.67%, 60% 66.67%, 60% 77.78%, 40% 77.78%, 40% 88.89%,
+    20% 88.89%, 20% 100%, 0 100%
+  );
+  visibility: hidden;
+}
+
+.menu-item::before {
+  background: rgba(8, 8, 8, 0.9);
+  transform: translate(var(--m), var(--m));
+}
+
+.menu-item:hover,
+.menu-item:focus-visible {
+  color: #fff;
+  outline: none;
+}
+
+.menu-item:hover::before,
+.menu-item:focus-visible::before,
+.menu-item:hover::after,
+.menu-item:focus-visible::after {
+  visibility: visible;
+}
+
+/*
+ * Sound switch in the top right corner: a stair-stepped speaker,
+ * 12 by 10 pixels, with waves when on and a cross when off. Sound is off until switched on.
+ */
+#sound {
+  position: fixed;
+  top: 0;
+  right: 0;
+  margin: calc(10px + env(safe-area-inset-top)) env(safe-area-inset-right) 0 0;
+  padding: 17px 22px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  background: none;
+  color: rgba(236, 235, 231, 0.72);
+  line-height: 14px;
+  white-space: nowrap;
+  transition: color 0.3s steps(3), opacity 3s ease 1.6s, visibility 0s linear 1.6s;
+  opacity: 0;
+  visibility: hidden;
+  /* Stays over the end screens too, so sound can be switched there as well. */
+  z-index: 2;
+}
+
+body.ready #sound {
+  opacity: 1;
+  visibility: visible;
+}
+
+#sound:hover,
+#sound:focus-visible {
+  color: #fff;
+  outline: none;
+}
+
+#sound svg {
+  width: calc(12 * var(--m));
+  height: calc(10 * var(--m));
+  flex: none;
+  shape-rendering: crispEdges;
+  /* The same hard shadow as the type. */
+  filter: drop-shadow(var(--m) var(--m) 0 rgba(8, 8, 8, 0.9));
+}
+
+#sound .waves,
+#sound[aria-pressed="true"] .cross {
+  display: none;
+}
+
+#sound[aria-pressed="true"] .waves {
+  display: inline;
+}
+
+/* Narrow screens and touch screens (no M key to press): just the speaker. */
+@media (max-width: 480px), (pointer: coarse) {
+  #sound .label {
+    display: none;
+  }
+}
+
+/*
+ * Two hints at the bottom: how to start walking blinks while standing;
+ * each time walking starts, a steady line on steering stays a few seconds.
+ */
+.hint {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* Well above the bottom edge, where the eye looks at the path ahead. */
+  padding: 0 16px calc(13vh + env(safe-area-inset-bottom));
+  display: flex;
+  justify-content: center;
+  text-align: center;
+  line-height: 16px;
+  /* Taps go straight through to the scene. */
+  pointer-events: none;
+  color: #ecebe7;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.8s ease, visibility 0s linear 0.8s;
+}
+
+/* Rounded to a whole pixel where supported, so the letters sit on the pixel grid. */
+@supports (width: round(1px, 1px)) {
+  .hint {
+    padding-bottom: calc(round(13vh, 1px) + env(safe-area-inset-bottom));
+  }
+}
+
+.hint .line {
+  padding: 20px 0;
+}
+
+/* Each half keeps together, so a narrow screen breaks the hint only at the comma. */
+.hint .part {
+  display: inline-block;
+}
+
+/* Set by the script when centring would land the line on a half pixel. */
+.hint .line.nudge {
+  padding-right: 1px;
+}
+
+body.ready:not(.walking) #hint {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 1.2s ease 0.6s, visibility 0s linear 0s;
+}
+
+#hint span {
+  animation: blink 2.6s ease-in-out infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 0.95; }
+  50% { opacity: 0.3; }
+}
+
+/* No blinking here: it fades in, holds still, and fades out. */
+body.ready.walking.steer-hint #steer-hint {
+  opacity: 0.95;
+  visibility: visible;
+  transition: opacity 1s ease 0.5s, visibility 0s linear 0s;
+}
+
+/* Gone before the start hint begins to fade in (0.6 s), so the two never overlap. */
+#steer-hint {
+  transition: opacity 0.5s ease, visibility 0s linear 0.5s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #hint span {
+    animation: none;
+  }
+}
+
+/*
+ * The story's lines take the hints' place at the bottom: the sign's words while it is
+ * looked at, and what became of you. While one shows (or the story has the screen), the
+ * walking hints keep out of the way.
+ */
+body.ready.quiet #hint,
+body.ready.walking.steer-hint.quiet #steer-hint {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.5s ease, visibility 0s linear 0.5s;
+}
+
+body.ready.sign-text #sign-text {
+  opacity: 0.95;
+  visibility: visible;
+  transition: opacity 1s ease 0.4s, visibility 0s linear 0s;
+}
+
+/* Title screen and every ending: black, with what became of you (on endings), the name of it all, and a way in/back. */
+#ending {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  /* The note at the top; the title and the button together in the middle; room for the name and links below on endings. */
+  grid-template-rows: 1fr auto auto minmax(92px, 1fr);
+  justify-items: center;
+  align-items: center;
+  padding: calc(16px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom));
+  background: #000;
+  color: #ecebe7;
+  text-align: center;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 1s ease, visibility 0s linear 1s;
+}
+
+body.title #ending,
+body.ended #ending {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition: opacity 1.6s ease, visibility 0s linear 0s;
+}
+
+#ending .note {
+  grid-row: 1;
+  align-self: start;
+  margin: 11vh 0 0;
+  line-height: 16px;
+  opacity: 0.9;
+}
+
+#ending .note .part {
+  display: inline-block;
+}
+
+#ending .title {
+  grid-row: 2;
+  --m: 4px;
+  margin: 0;
+  font-weight: 400;
+  line-height: calc(var(--m) * 14);
+}
+
+#ending .title .part {
+  display: inline-block;
+}
+
+@media (max-width: 760px) {
+  #ending .title {
+    --m: 3px;
+  }
+}
+
+@media (max-width: 520px) {
+  #ending .title {
+    --m: 2px;
+  }
+}
+
+/* The last ending's letter, between the title and the way back (which takes you back to the very beginning). */
+#ending.with-letter {
+  grid-template-rows: 1fr auto auto auto minmax(92px, 1fr);
+}
+
+#ending .letters {
+  grid-row: 3;
+}
+
+#ending .letter {
+  max-width: 560px;
+  margin: 22px 0 0;
+  line-height: 16px;
+  opacity: 0.85;
+}
+
+#ending .letter .part {
+  display: inline-block;
+}
+
+#ending .letter + .letter {
+  margin-top: 12px;
+}
+
+#ending [hidden] {
+  display: none;
+}
+
+#start-over {
+  grid-row: 3;
+  /* Just under the title: the gap reads as about one line of the title's type. */
+  margin: 18px 0 0;
+  padding: 12px 22px;
+  border: 0;
+  background: none;
+  line-height: 14px;
+}
+
+#ending.with-letter #start-over {
+  grid-row: 4;
+}
+
+/* The menu cursor sits beside the words, inside the button's horizontal padding. */
+#start-over::before,
+#start-over::after {
+  left: calc(22px - 8 * var(--m));
+}

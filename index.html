@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="A walk through a winter forest in a blizzard. By Vova Ivanenko." />
+    <meta name="theme-color" content="#000000" />
+    <title>Blizzard in the Forest</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <style>html,body{margin:0;background:#000}</style>
+    <noscript>
+      <style>
+        #loader { display: none; }
+        #credits { opacity: 1; visibility: visible; transition: none; }
+        #sound { display: none; }
+      </style>
+    </noscript>
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+    <footer id="credits">
+      <div class="credits-card">
+        <p class="name pixel-type">Vova Ivanenko</p>
+        <nav class="links pixel-type" aria-label="Links">
+          <a class="menu-item" href="https://elfsight.com" target="_blank" rel="noopener noreferrer">Elfsight</a>
+          <a class="menu-item" href="https://github.com/d521bb85" target="_blank" rel="noopener noreferrer">GitHub</a>
+          <a class="menu-item" href="https://www.linkedin.com/in/vladimir-ivanenko/" target="_blank" rel="noopener noreferrer">LinkedIn</a>
+        </nav>
+      </div>
+    </footer>
+    <button id="sound" class="pixel-type" type="button" aria-pressed="false" aria-label="Sound">
+      <svg viewBox="0 0 12 10" aria-hidden="true" fill="currentColor">
+        <rect x="0" y="3" width="2" height="4" /><rect x="2" y="2" width="1" height="6" /><rect x="3" y="1" width="1" height="8" /><rect x="4" y="0" width="1" height="10" />
+        <g class="waves">
+          <rect x="6" y="4" width="1" height="2" />
+          <rect x="7" y="2" width="1" height="1" /><rect x="8" y="3" width="1" height="4" /><rect x="7" y="7" width="1" height="1" />
+          <rect x="9" y="0" width="1" height="1" /><rect x="10" y="1" width="1" height="1" /><rect x="11" y="2" width="1" height="6" /><rect x="10" y="8" width="1" height="1" /><rect x="9" y="9" width="1" height="1" />
+        </g>
+        <g class="cross">
+          <rect x="7" y="3" width="1" height="1" /><rect x="8" y="4" width="1" height="1" /><rect x="9" y="5" width="1" height="1" /><rect x="10" y="6" width="1" height="1" /><rect x="11" y="7" width="1" height="1" />
+          <rect x="11" y="3" width="1" height="1" /><rect x="10" y="4" width="1" height="1" /><rect x="8" y="6" width="1" height="1" /><rect x="7" y="7" width="1" height="1" />
+        </g>
+      </svg>
+      <span class="label">Sound off (M)</span>
+    </button>
+    <div id="hint" class="hint pixel-type" aria-live="polite"><div class="line"><span>Click or press Space to start walking</span></div></div>
+    <div id="steer-hint" class="hint pixel-type" aria-live="polite"><div class="line"><span class="part">Move the pointer above the middle to go forward,</span> <span class="part">to the left or right to turn</span></div></div>
+    <div id="sign-text" class="hint pixel-type" aria-live="polite"><div class="line"><span class="part">Tread softly in these woods,</span> <span class="part">and softer still when the snow begins to howl.</span></div></div>
+    <section id="ending" aria-live="polite">
+      <p class="note pixel-type" data-ending="first" hidden><span class="part">You escaped the yeti.</span> <span class="part">What happened next, no one knows.</span></p>
+      <p class="note pixel-type" data-ending="second" hidden><span class="part">You escaped the yeti.</span> <span class="part">A rescue party found you and brought you home.</span> <span class="part">No one believed you had seen it.</span></p>
+      <p class="note pixel-type" data-ending="eaten" hidden><span class="part">You were eaten by the yeti.</span></p>
+      <!-- The yeti has no words, only noises. -->
+      <p class="note pixel-type" data-ending="yeti-lost" hidden><span class="part">Hrrmm — abbo — bloo-blo —</span> <span class="part">blob — bloo-blo...</span></p>
+      <p class="note pixel-type" data-ending="yeti-won" hidden><span class="part">Mmmh — nom-nom — gruu —</span> <span class="part">abba-bubba — HRRAAWH!</span></p>
+      <h1 class="title pixel-type"><span class="part">BLIZZARD</span> <span class="part">IN THE FOREST</span></h1>
+      <div class="letters" data-ending="yeti-won" hidden>
+        <p class="letter pixel-type"><span class="part">Thank you for playing all the way to the end.</span></p>
+        <p class="letter pixel-type"><span class="part">If you enjoyed it,</span> <span class="part">please share it with your friends.</span></p>
+        <p class="letter pixel-type"><span class="part">I never meant to make a game.</span> <span class="part">I only wanted a website with some fancy visuals</span> <span class="part">and lost myself along the way.</span></p>
+        <p class="letter pixel-type"><span class="part">And if you'd like to say hello,</span> <span class="part">you'll find my links below.</span></p>
+      </div>
+      <button id="start-over" class="pixel-type menu-item" type="button">Begin</button>
+    </section>
+    <div id="loader" aria-hidden="true"><div class="track"><div class="bar"></div></div></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

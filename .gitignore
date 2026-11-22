@@ -1,0 +1,17 @@
+node_modules
+dist
+.wrangler
+
+# Local editor/agent launch config
+.claude/launch.json
+
+# Logs
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Env files
+.env
+.env.*
+!.env.example
