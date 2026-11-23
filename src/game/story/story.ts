@@ -5,7 +5,7 @@ import type { Stage, StoryCues, StoryEvent } from "./context";
 import { EnterHut } from "./enter-hut";
 import { HutBeat } from "./hut-beat";
 import { SignBeat } from "./sign-beat";
-import { YETI_FOCUS, YETI_GUST, YETI_MAX, YETI_MIN } from "./tuning";
+import { CAUGHT, LEASH, YETI_FOCUS, YETI_GUST, YETI_MAX, YETI_MIN } from "./tuning";
 import { YetiBeat } from "./yeti-beat";
 
 export type { StoryCues, StoryEvent } from "./context";
@@ -90,6 +90,16 @@ export class Story {
   /** Whether the yeti is about: the deer make off, and keep away. */
   get chasing(): boolean {
     return this.phase !== "waiting" && this.phase !== "wander" && this.phase !== "read";
+  }
+
+  /** 0..1: the chase is on, from the yeti's roar to safety or the dark; higher the nearer it gets. */
+  get tension(): number {
+    if (this.phase === "caught") return 1;
+    if ((this.phase === "yeti" && this.pursuit.met) || this.phase === "flight") {
+      const near = 1 - THREE.MathUtils.clamp((this.pursuit.distance - CAUGHT) / (LEASH - CAUGHT), 0, 1);
+      return 0.55 + 0.45 * near;
+    }
+    return 0;
   }
 
   /** Whether the story has the camera (going into the hut or caught, and after). */

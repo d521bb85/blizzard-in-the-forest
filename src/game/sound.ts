@@ -16,6 +16,13 @@ const SR = 22050;
 const PAD_BASE = 220;
 const DRONE_BASE = 55;
 const BELL_BASE = 880;
+const BASS_BASE = 110;
+const BOW_BASE = 220;
+/** Mix levels: calm walk vs. during a chase. */
+const MUSIC_CALM = 0.8;
+const MUSIC_CHASE = 1.18;
+const STEPS_CALM = 0.32;
+const STEPS_CHASE = 0.21;
 /** D: the score's home pitch class. */
 const HOME = 2;
 
@@ -99,6 +106,72 @@ function reversed(ctx: BaseAudioContext, src: AudioBuffer): AudioBuffer {
   const from = src.getChannelData(0);
   const to = buf.getChannelData(0);
   for (let i = 0; i < from.length; i++) to[i] = from[from.length - 1 - i];
+  return buf;
+}
+
+/** A dark, woody bowed low cello stroke for the driving chase pulse. */
+function bassSample(ctx: BaseAudioContext, rand: Rand): AudioBuffer {
+  const seconds = 0.52;
+  const buf = ctx.createBuffer(1, Math.round(SR * seconds), SR);
+  const d = buf.getChannelData(0);
+  const phases = Array.from({ length: 10 }, () => [rand() * Math.PI * 2, rand() * Math.PI * 2]);
+  let bow = 0;
+  for (let i = 0; i < d.length; i++) {
+    const t = i / SR;
+    let s = 0;
+    for (let k = 1; k <= 10; k++) {
+      const amp = Math.exp(-k / 4.2) / k ** 0.9;
+      const w = 2 * Math.PI * BASS_BASE * k * t;
+      s += amp * (Math.sin(w * 1.0025 + phases[k - 1][0]) + 0.8 * Math.sin(w * 0.9975 + phases[k - 1][1]));
+    }
+    bow += (rand() * 2 - 1 - bow) * 0.16;
+    const rosin = bow * 0.28 * Math.exp(-t / 0.032);
+    const env = Math.min(1, t / 0.012) * Math.exp(-t / 0.22);
+    d[i] = (s + rosin) * env;
+  }
+  const tail = Math.round(0.035 * SR);
+  for (let i = 0; i < tail; i++) d[d.length - 1 - i] *= i / tail;
+  finish(d, 0.9, 11);
+  return buf;
+}
+
+/** A deep northern frame drum: taut hide dropping in pitch, struck with a muffled mallet. */
+function drumSample(ctx: BaseAudioContext, rand: Rand): AudioBuffer {
+  const seconds = 0.68;
+  const buf = ctx.createBuffer(1, Math.round(SR * seconds), SR);
+  const d = buf.getChannelData(0);
+  let ph = 0;
+  let lp = 0;
+  for (let i = 0; i < d.length; i++) {
+    const t = i / SR;
+    const f = 38 + 46 * Math.exp(-t / 0.042);
+    ph += f / SR;
+    lp += (rand() * 2 - 1 - lp) * 0.08;
+    const body = Math.sin(ph * Math.PI * 2) * Math.exp(-t / 0.19);
+    const skin = Math.sin(ph * Math.PI * 4) * 0.25 * Math.exp(-t / 0.07);
+    const mallet = lp * 1.1 * Math.exp(-t / 0.025);
+    d[i] = (body + skin + mallet) * Math.min(1, t / 0.005);
+  }
+  const tail = Math.round(0.04 * SR);
+  for (let i = 0; i < tail; i++) d[d.length - 1 - i] *= i / tail;
+  finish(d, 0.9, 10);
+  return buf;
+}
+
+/** Dark, cold northern bowed strings (viola/cello ensemble), two seconds long and loopable. */
+function bowSample(ctx: BaseAudioContext, rand: Rand): AudioBuffer {
+  const seconds = 2;
+  const buf = ctx.createBuffer(1, SR * seconds, SR);
+  const d = buf.getChannelData(0);
+  const cycles = BOW_BASE * seconds;
+  for (let k = 1; BOW_BASE * k < 3800; k++) {
+    const amp = Math.exp(-k / 6.5) / k ** 0.85;
+    const spread = Math.max(1, Math.round(k * 0.65));
+    addCycles(d, cycles * k, amp, rand() * Math.PI * 2);
+    addCycles(d, cycles * k - spread, amp * 0.72, rand() * Math.PI * 2);
+    addCycles(d, cycles * k + spread, amp * 0.72, rand() * Math.PI * 2);
+  }
+  finish(d, 0.82, 11);
   return buf;
 }
 
@@ -287,17 +360,42 @@ export class Score {
   private chord = 0;
   private cycle = 0;
   private sections = 0;
+  private paused = false;
   private droneVoice: ((at: number) => void) | null = null;
 
   constructor(private engine: Engine, private rand: Rand) {}
 
+  get key(): number {
+    return this.section ? this.section.key : 0;
+  }
+
   start(t: number): void {
     this.next = t;
+    this.paused = false;
     this.section = this.newSection(true);
+  }
+
+  /** Holds the calm score during a chase, letting the current drone fade out. */
+  pause(t: number): void {
+    if (this.paused) return;
+    this.paused = true;
+    this.droneVoice?.(t);
+    this.droneVoice = null;
+  }
+
+  /** Resumes the calm score cleanly from the top of a bar after the chase ends. */
+  resume(at: number): void {
+    if (!this.paused) return;
+    this.paused = false;
+    this.step = 0;
+    this.chord = 0;
+    this.cycle = 0;
+    this.next = at;
   }
 
   /** Schedules every step that starts before `until`. */
   scheduleUntil(until: number): void {
+    if (this.paused) return;
     while (this.next < until) this.play(this.next);
   }
 
@@ -393,6 +491,186 @@ export class Score {
   }
 }
 
+interface ChaseBar {
+  /** Semitone offsets from the chase tonic for each 8th-note cello pulse (8 steps per bar). */
+  bass: number[];
+  /** Wide, stark northern harmony tones sustained across the bar (semitones above tonic). */
+  chord: number[];
+  /** Slow, tragic bowed lead melody: [step, semitones above tonic + 24, duration in steps]. */
+  lead: [number, number, number][];
+  /** Optional solitary cold bell toll on the downbeat (semitones above tonic + 36). */
+  toll?: number;
+}
+
+/**
+ * Eight-bar northern dramatic progression (i -> bVII -> bVI -> v | i -> bII -> iv -> bVI-v),
+ * transposed to whatever key the forest is in. Open fifths, Aeolian descent, and dark Phrygian turns.
+ */
+const CHASE_BARS: ChaseBar[] = [
+  // Phrase A: stark Aeolian descent (D -> C -> Bb -> A in home key D).
+  {
+    bass: [0, 0, 0, 7, 0, 0, 3, 0],
+    chord: [0, 7, 3],
+    lead: [[0, 7, 5], [5, 8, 3]],
+    toll: 0
+  },
+  {
+    bass: [-2, -2, -2, 5, -2, -2, 2, -2],
+    chord: [-2, 5, 2],
+    lead: [[0, 7, 4], [4, 5, 2], [6, 3, 2]]
+  },
+  {
+    bass: [-4, -4, -4, 3, -4, -4, 0, -4],
+    chord: [-4, 3, 0],
+    lead: [[0, 2, 4], [4, 3, 2], [6, 2, 2]],
+    toll: 7
+  },
+  {
+    bass: [-5, -5, -5, 2, -5, -5, -4, -5],
+    chord: [-5, 2, 0],
+    lead: [[0, 0, 4], [4, 1, 2], [6, 0, 2]]
+  },
+  // Phrase B: ominous Phrygian lift and tragic swell (D -> Eb -> G -> Bb-A).
+  {
+    bass: [0, 0, 7, 0, 0, 0, 1, 0],
+    chord: [0, 7, 3],
+    lead: [[0, 12, 4], [4, 10, 2], [6, 8, 2]],
+    toll: 12
+  },
+  {
+    bass: [1, 1, 1, 8, 1, 1, 7, 1],
+    chord: [1, 8, 5],
+    lead: [[0, 8, 4], [4, 7, 2], [6, 5, 2]]
+  },
+  {
+    bass: [5, 5, 5, 0, 5, 5, 3, 5],
+    chord: [5, 0, 8],
+    lead: [[0, 7, 4], [4, 8, 2], [6, 10, 2]],
+    toll: 8
+  },
+  {
+    bass: [-4, -4, -4, -4, -5, -5, -4, -5],
+    chord: [-5, 2, 8],
+    lead: [[0, 8, 4], [4, 7, 4]]
+  }
+];
+
+/** Steady, relentless 8th-note bow weighting: heavy downbeat and grim forward push, never bouncy. */
+const PULSE_WEIGHT = [1.0, 0.62, 0.74, 0.86, 0.9, 0.62, 0.78, 0.72];
+
+/**
+ * The chase score: a stark, cold, northern dramatic pursuit locked to the forest's current key.
+ * Relentless bowed low cellos, deep primal frame drums, a dark tonic drone, and mournful
+ * winter strings that swell and tighten as the distance closes.
+ */
+export class Chase {
+  private active = false;
+  private intensity = 0.6;
+  private key = 0;
+  private next = 0;
+  private step = 0;
+  private bar = 0;
+  private cycle = 0;
+
+  constructor(private engine: Engine, private rand: Rand) {}
+
+  start(t: number, key: number, intensity: number): void {
+    this.active = true;
+    this.key = key;
+    this.intensity = clamp(intensity, 0.5, 1);
+    this.step = 0;
+    this.bar = 0;
+    this.cycle = 0;
+    const at = Math.max(this.next, t + 0.015);
+    this.next = at;
+    // Opening gravity on the roar: a deep northern drum strike and a cold bowed fifth.
+    const base = this.base();
+    this.engine.chaseDrum(at, 0.72, 0.34, 0);
+    this.engine.chaseBow(base + 12, at, 1.4, 0.08, -0.35, 0.08);
+    this.engine.chaseBow(base + 19, at, 1.4, 0.075, 0.35, 0.08);
+  }
+
+  setIntensity(intensity: number): void {
+    this.intensity = clamp(intensity, 0.5, 1);
+  }
+
+  stop(): void {
+    this.active = false;
+  }
+
+  scheduleUntil(until: number): void {
+    if (!this.active) return;
+    while (this.next < until) this.play(this.next);
+  }
+
+  /** Tonic bass MIDI note (C#2..C3) matching the ambient score's current key. */
+  private base(): number {
+    const pc = mod(HOME + this.key, 12);
+    return 37 + mod(pc - 37, 12);
+  }
+
+  private play(t: number): void {
+    const k = this.intensity;
+    // Solemn, driving 8th notes (~127 BPM far, tightening to ~136 BPM when close).
+    const stepDur = 0.255 - k * 0.035;
+    const barDur = stepDur * 8;
+    const bar = CHASE_BARS[this.bar];
+    const base = this.base();
+    const s = this.step;
+    const r = this.rand;
+
+    // Bar downbeat: wide, cold winter string harmony, deep pedal drone, and rare icy bell toll.
+    if (s === 0) {
+      this.engine.chaseDrone(base, t, barDur, 0.065 + 0.03 * k);
+      bar.chord.forEach((rel, i) => {
+        const note = base + 12 + rel;
+        const pan = i === 0 ? -0.42 : i === 1 ? 0.42 : 0;
+        const level = (i < 2 ? 0.062 : 0.048) * (0.82 + 0.32 * k);
+        this.engine.chaseBow(note, t, barDur, level, pan, 0.32);
+      });
+      if (bar.toll !== undefined) {
+        this.engine.chaseToll(base + 36 + bar.toll, t, 0.045 + 0.025 * k, (this.bar % 2 ? 1 : -1) * 0.35);
+      }
+    }
+
+    // Dramatic, mournful northern string lead melody.
+    for (const [atStep, rel, len] of bar.lead) {
+      if (atStep !== s) continue;
+      const dur = stepDur * len;
+      const lift = this.cycle > 0 && k > 0.78 ? 12 : 0;
+      const level = (0.075 + 0.04 * k) * (lift ? 0.85 : 1);
+      this.engine.chaseBow(base + 24 + rel + lift, t, dur, level, (this.bar % 2 ? 0.16 : -0.16), 0.14);
+    }
+
+    // Relentless low bowed cello pulse driving the chase forward.
+    const bassNote = base + bar.bass[s];
+    const bassLevel = 0.22 * PULSE_WEIGHT[s] * (0.85 + 0.24 * k) * (0.94 + r() * 0.12);
+    this.engine.chaseBass(bassNote, t, bassLevel, (s % 2 ? 1 : -1) * 0.1);
+
+    // Deep northern frame drum: weighty, primal pulse without drum-kit bounce.
+    if (s === 0) {
+      this.engine.chaseDrum(t, 0.8 + r() * 0.05, 0.31 * (0.85 + 0.25 * k), 0);
+    } else if (s === 3 || s === 6) {
+      const level = (s === 3 ? 0.22 : 0.19) * (0.82 + 0.28 * k);
+      this.engine.chaseDrum(t, (s === 3 ? 0.92 : 0.98) + r() * 0.06, level, s === 3 ? -0.18 : 0.18);
+    } else if (s === 4 && (this.bar >= 4 || k > 0.68)) {
+      this.engine.chaseDrum(t, 0.86 + r() * 0.05, 0.18 * (0.8 + 0.3 * k), 0);
+    } else if (s === 7 && (this.bar === 3 || this.bar === 7 || k > 0.8)) {
+      this.engine.chaseDrum(t, 0.94 + r() * 0.06, 0.17 * (0.82 + 0.28 * k), 0.12);
+    } else if (k > 0.72 && (s === 2 || s === 5)) {
+      // Quiet muffled palm thump as the distance closes.
+      this.engine.chaseDrum(t, 1.24 + r() * 0.12, 0.085 + 0.045 * k, s === 2 ? -0.26 : 0.26);
+    }
+
+    this.next = t + stepDur;
+    if (++this.step < 8) return;
+    this.step = 0;
+    if (++this.bar < CHASE_BARS.length) return;
+    this.bar = 0;
+    this.cycle++;
+  }
+}
+
 /** All the nodes and samples; works on a live or an offline audio context. */
 export class Engine {
   readonly master: GainNode;
@@ -402,19 +680,30 @@ export class Engine {
   /** The yeti and the hut door. */
   readonly cues: GainNode;
   readonly score: Score;
+  readonly chase: Chase;
 
   private rand: Rand;
   private padBuf: AudioBuffer;
   private droneBuf: AudioBuffer;
   private bellBuf: AudioBuffer;
   private swellBuf: AudioBuffer;
+  private bassBuf: AudioBuffer;
+  private drumBuf: AudioBuffer;
+  private bowBuf: AudioBuffer;
   private crunches: AudioBuffer[];
   private growlBuf: AudioBuffer;
   private stompBuf: AudioBuffer;
   private creakBuf: AudioBuffer;
+  private ambientBus: GainNode;
   private padBus: BiquadFilterNode;
   private bellBus: GainNode;
   private droneBus: GainNode;
+  private chaseBus: GainNode;
+  private chaseBassBus: BiquadFilterNode;
+  private chaseDrumBus: GainNode;
+  private chaseStringBus: BiquadFilterNode;
+  private chaseStringTone: BiquadFilterNode;
+  private chaseTremRate: OscillatorNode;
   private reverb: ConvolverNode;
   private windBody: BiquadFilterNode;
   private windHowl: BiquadFilterNode;
@@ -426,6 +715,7 @@ export class Engine {
   private howlPan: StereoPannerNode;
   private lastCrunch = -1;
   private foot = 1;
+  private chasing = false;
 
   constructor(readonly ctx: BaseAudioContext, seed: number) {
     this.rand = mulberry32(seed);
@@ -434,6 +724,9 @@ export class Engine {
     this.droneBuf = droneSample(ctx, r);
     this.bellBuf = bellSample(ctx);
     this.swellBuf = reversed(ctx, this.bellBuf);
+    this.bassBuf = bassSample(ctx, r);
+    this.drumBuf = drumSample(ctx, r);
+    this.bowBuf = bowSample(ctx, r);
     this.crunches = Array.from({ length: 6 }, () => crunchSample(ctx, r));
     this.growlBuf = growlSample(ctx, r);
     this.stompBuf = stompSample(ctx, r);
@@ -464,16 +757,21 @@ export class Engine {
     };
 
     this.music = ctx.createGain();
-    this.music.gain.value = 0.8;
+    this.music.gain.value = MUSIC_CALM;
     this.music.connect(this.master);
-    send(this.music, 0.9);
+
+    // Calm ambient sub-bus: keeps the long wet reverb send (0.8 * 0.9 = 0.72) and ducks during a chase.
+    this.ambientBus = ctx.createGain();
+    this.ambientBus.gain.value = 1;
+    this.ambientBus.connect(this.music);
+    send(this.ambientBus, MUSIC_CALM * 0.9);
 
     // Pads through a filter that slowly opens and closes.
     this.padBus = ctx.createBiquadFilter();
     this.padBus.type = "lowpass";
     this.padBus.frequency.value = 1300;
     this.padBus.Q.value = 0.7;
-    this.padBus.connect(this.music);
+    this.padBus.connect(this.ambientBus);
     const lfo = ctx.createOscillator();
     lfo.frequency.value = 0.031;
     const depth = ctx.createGain();
@@ -483,7 +781,7 @@ export class Engine {
 
     // Bells, with a dark echo.
     this.bellBus = ctx.createGain();
-    this.bellBus.connect(this.music);
+    this.bellBus.connect(this.ambientBus);
     const delay = ctx.createDelay(2);
     delay.delayTime.value = 0.62;
     const feedback = ctx.createGain();
@@ -495,10 +793,44 @@ export class Engine {
     echo.gain.value = 0.55;
     this.bellBus.connect(delay);
     delay.connect(dull).connect(feedback).connect(delay);
-    dull.connect(echo).connect(this.music);
+    dull.connect(echo).connect(this.ambientBus);
 
     this.droneBus = ctx.createGain();
-    this.droneBus.connect(this.music);
+    this.droneBus.connect(this.ambientBus);
+
+    // Chase sub-bus: lives in the same cold forest reverb, just dry enough to keep the pulse tight.
+    this.chaseBus = ctx.createGain();
+    this.chaseBus.gain.value = 0;
+    this.chaseBus.connect(this.music);
+    send(this.chaseBus, 0.48);
+
+    this.chaseBassBus = ctx.createBiquadFilter();
+    this.chaseBassBus.type = "lowpass";
+    this.chaseBassBus.frequency.value = 900;
+    this.chaseBassBus.Q.value = 0.85;
+    this.chaseBassBus.connect(this.chaseBus);
+
+    this.chaseDrumBus = ctx.createGain();
+    this.chaseDrumBus.connect(this.chaseBus);
+
+    // Cold northern winter strings: dark, resonant, with a subtle tense bow shimmer.
+    this.chaseStringBus = ctx.createBiquadFilter();
+    this.chaseStringBus.type = "highpass";
+    this.chaseStringBus.frequency.value = 180;
+    this.chaseStringBus.Q.value = 0.6;
+    this.chaseStringTone = ctx.createBiquadFilter();
+    this.chaseStringTone.type = "lowpass";
+    this.chaseStringTone.frequency.value = 1600;
+    this.chaseStringTone.Q.value = 0.7;
+    const trem = ctx.createGain();
+    trem.gain.value = 0.93;
+    this.chaseTremRate = ctx.createOscillator();
+    this.chaseTremRate.frequency.value = 5.2;
+    const tremDepth = ctx.createGain();
+    tremDepth.gain.value = 0.07;
+    this.chaseTremRate.connect(tremDepth).connect(trem.gain);
+    this.chaseTremRate.start();
+    this.chaseStringBus.connect(this.chaseStringTone).connect(trem).connect(this.chaseBus);
 
     // The blizzard: looping noise through filters that follow the gusts.
     this.wind = ctx.createGain();
@@ -541,7 +873,7 @@ export class Engine {
 
     // Footsteps sit well under the wind: about 10 dB quieter than the crunch samples' full level.
     this.steps = ctx.createGain();
-    this.steps.gain.value = 0.32;
+    this.steps.gain.value = STEPS_CALM;
     this.steps.connect(this.master);
     send(this.steps, 0.12);
 
@@ -552,6 +884,7 @@ export class Engine {
     send(this.cues, 0.45);
 
     this.score = new Score(this, r);
+    this.chase = new Chase(this, r);
   }
 
   private voice(buf: AudioBuffer, rate: number, bus: AudioNode, pan: number, loop: boolean): [AudioBufferSourceNode, GainNode] {
@@ -615,6 +948,95 @@ export class Engine {
     const [src, g] = this.voice(this.swellBuf, rate, this.bellBus, 0, false);
     g.gain.setValueAtTime(level, t);
     src.start(t);
+  }
+
+  chaseBass(note: number, t: number, level: number, pan: number): void {
+    const [src, g] = this.voice(this.bassBuf, mtof(note) / BASS_BASE, this.chaseBassBus, pan, false);
+    src.detune.value = (this.rand() - 0.5) * 6;
+    g.gain.setValueAtTime(level, t);
+    src.start(t);
+  }
+
+  chaseDrum(t: number, rate: number, level: number, pan: number): void {
+    const [src, g] = this.voice(this.drumBuf, rate, this.chaseDrumBus, pan, false);
+    g.gain.setValueAtTime(level, t);
+    src.start(t);
+  }
+
+  chaseDrone(note: number, t: number, dur: number, level: number): void {
+    const [src, g] = this.voice(this.droneBuf, mtof(note) / DRONE_BASE, this.chaseBassBus, 0, true);
+    const rise = Math.min(0.4, dur * 0.35);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(level, t + rise);
+    g.gain.setValueAtTime(level, t + dur);
+    g.gain.setTargetAtTime(0, t + dur, 0.45);
+    src.start(t, this.rand() * this.droneBuf.duration);
+    src.stop(t + dur + 2.5);
+  }
+
+  chaseBow(note: number, t: number, dur: number, level: number, pan: number, attack: number): void {
+    const [src, g] = this.voice(this.bowBuf, mtof(note) / BOW_BASE, this.chaseStringBus, pan, true);
+    src.detune.value = (this.rand() - 0.5) * 10;
+    const rise = Math.min(attack, dur * 0.45);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(level, t + rise);
+    g.gain.setValueAtTime(level, t + dur);
+    g.gain.setTargetAtTime(0, t + dur, 0.45);
+    src.start(t, this.rand() * this.bowBuf.duration);
+    src.stop(t + dur + 2.5);
+  }
+
+  chaseToll(note: number, t: number, level: number, pan: number): void {
+    const [src, g] = this.voice(this.bellBuf, mtof(note) / BELL_BASE, this.chaseBus, pan, false);
+    g.gain.setValueAtTime(level, t);
+    src.start(t);
+  }
+
+  /** Schedules upcoming calm or chase music from the current audio clock `now`. */
+  scheduleUntil(now: number): void {
+    this.score.scheduleUntil(now + 2);
+    this.chase.scheduleUntil(now + 0.5);
+  }
+
+  /**
+   * Switches between the calm score and the chase score (`intensity` 0 = calm, > 0 = chase).
+   * During a chase the footsteps duck slightly while the music rises louder and darker.
+   */
+  setChase(t: number, intensity: number): void {
+    const level = clamp(intensity, 0, 1);
+    const active = level > 0;
+    if (active && !this.chasing) {
+      this.chasing = true;
+      this.score.pause(t);
+      this.chase.start(t, this.score.key, level);
+      this.music.gain.cancelScheduledValues(t);
+      this.music.gain.setTargetAtTime(MUSIC_CHASE, t, 0.3);
+      this.steps.gain.cancelScheduledValues(t);
+      this.steps.gain.setTargetAtTime(STEPS_CHASE, t, 0.35);
+      this.ambientBus.gain.cancelScheduledValues(t);
+      this.ambientBus.gain.setTargetAtTime(0.14, t, 0.4);
+      this.chaseBus.gain.cancelScheduledValues(t);
+      this.chaseBus.gain.setTargetAtTime(1, t, 0.08);
+      this.chase.scheduleUntil(t + 0.5);
+    } else if (!active && this.chasing) {
+      this.chasing = false;
+      this.chase.stop();
+      this.score.resume(t + 1.4);
+      this.music.gain.cancelScheduledValues(t);
+      this.music.gain.setTargetAtTime(MUSIC_CALM, t, 1.1);
+      this.steps.gain.cancelScheduledValues(t);
+      this.steps.gain.setTargetAtTime(STEPS_CALM, t, 0.9);
+      this.ambientBus.gain.cancelScheduledValues(t);
+      this.ambientBus.gain.setTargetAtTime(1, t, 1.3);
+      this.chaseBus.gain.cancelScheduledValues(t);
+      this.chaseBus.gain.setTargetAtTime(0, t, 0.65);
+    }
+    if (active) {
+      this.chase.setIntensity(level);
+      this.chaseBassBus.frequency.setTargetAtTime(680 + level * 680, t, 0.3);
+      this.chaseStringTone.frequency.setTargetAtTime(1200 + level * 1050, t, 0.3);
+      this.chaseTremRate.frequency.setTargetAtTime(4.8 + level * 1.6, t, 0.4);
+    }
   }
 
   /** Follows the weather: gust strength 0..1 and where the wind comes from relative to the view. */
@@ -694,6 +1116,8 @@ export class Soundscape {
   private suspendTimer = 0;
   private lastSteps = -1;
   private nextWind = 0;
+  private chase = 0;
+  private appliedChase = 0;
 
   constructor() {
     document.addEventListener("visibilitychange", () => this.sync());
@@ -741,9 +1165,17 @@ export class Soundscape {
     if (run) {
       void ctx.resume();
       if (!this.timer) {
-        const tick = () => this.engine!.score.scheduleUntil(ctx.currentTime + 2);
+        const tick = () => {
+          const engine = this.engine!;
+          const now = ctx.currentTime;
+          if ((this.chase > 0) !== (this.appliedChase > 0)) {
+            engine.setChase(now, this.chase);
+            this.appliedChase = this.chase;
+          }
+          engine.scheduleUntil(now);
+        };
         tick();
-        this.timer = window.setInterval(tick, 250);
+        this.timer = window.setInterval(tick, 120);
       }
     } else {
       // Paused, the context's clock stops too, so the score carries on where it was.
@@ -761,20 +1193,29 @@ export class Soundscape {
     engine[name](ctx.currentTime + 0.01, clamp(pan, -1, 1), clamp(level, 0, 1));
   }
 
-  /** Called every frame with the weather and the walker (`heavy`: the walker is the yeti). */
-  frame(gust: number, windX: number, windZ: number, yaw: number, speed: number, steps: number, heavy = false): void {
+  /** Called every frame with the weather, the walker (`heavy`: the walker is the yeti), and chase intensity 0..1. */
+  frame(gust: number, windX: number, windZ: number, yaw: number, speed: number, steps: number, heavy = false, chase = 0): void {
     const ctx = this.ctx;
     const engine = this.engine;
     const stepped = steps !== this.lastSteps;
     this.lastSteps = steps;
+    this.chase = clamp(chase, 0, 1);
     if (!ctx || !engine || !this.on || ctx.state !== "running") return;
     const now = ctx.currentTime;
+    if ((this.chase > 0) !== (this.appliedChase > 0)) {
+      engine.setChase(now, this.chase);
+      this.appliedChase = this.chase;
+    }
     if (stepped && speed > 0.15) {
       if (heavy) engine.tread(now + 0.01, speed);
       else engine.step(now + 0.01, speed);
     }
     if (now < this.nextWind) return;
     this.nextWind = now + 0.1;
+    if (this.chase > 0 && Math.abs(this.chase - this.appliedChase) > 0.01) {
+      engine.setChase(now, this.chase);
+      this.appliedChase = this.chase;
+    }
     // The wind is heard from where it blows from: + is the right of the view.
     const len = Math.hypot(windX, windZ) || 1;
     const pan = (-windX * Math.cos(yaw) + windZ * Math.sin(yaw)) / len;

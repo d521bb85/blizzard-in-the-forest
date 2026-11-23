@@ -27,6 +27,7 @@ import {
   HUNT_ROAR,
   HUNT_SPREAD,
   IN_THE_DOOR,
+  LEASH,
   MAN_BEARINGS,
   MAN_DEEPER,
   MAN_EMERGE,
@@ -129,6 +130,16 @@ export class Hunt {
   /** Whether there is something to run from: the deer make off. */
   get chasing(): boolean {
     return this.phase !== "waiting" && this.phase !== "prowl";
+  }
+
+  /** 0..1: the hunt is on, from the roar to the door or the dark; higher the nearer he is. */
+  get tension(): number {
+    if (this.phase === "feast") return 1;
+    if (this.phase === "roar" || this.phase === "chase") {
+      const near = 1 - THREE.MathUtils.clamp((this.distance - GRAB) / (LEASH - GRAB), 0, 1);
+      return 0.55 + 0.45 * near;
+    }
+    return 0;
   }
 
   /** Whether the story has the camera. */

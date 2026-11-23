@@ -86,7 +86,7 @@ export interface CursorListener {
 }
 
 export interface SoundListener extends StoryCues {
-  frame(gust: number, windX: number, windZ: number, yaw: number, speed: number, steps: number, heavy: boolean): void;
+  frame(gust: number, windX: number, windZ: number, yaw: number, speed: number, steps: number, heavy: boolean, chase: number): void;
 }
 
 export interface Game {
@@ -365,7 +365,7 @@ export async function start(canvas: HTMLCanvasElement, options: StartOptions = {
       sky.update(camera);
       const fineHeight = window.innerHeight * Math.min(window.devicePixelRatio || 1, FINE_DPR);
       blizzard.update(dt, weather, camera, walker.velocity, walker.groundY, walker.slope, output.target.height, fineHeight);
-      options.sound?.frame(weather.gust, weather.wind.x, weather.wind.z, walker.yaw, walker.speed, walker.steps, walk === "yeti");
+      options.sound?.frame(weather.gust, weather.wind.x, weather.wind.z, walker.yaw, walker.speed, walker.steps, walk === "yeti", t.tension);
       options.cursor?.frame(
         !steering.walking || steering.locked || t.driving || walker.focused,
         walker.speed > STEPPING ? walker.stride : null
