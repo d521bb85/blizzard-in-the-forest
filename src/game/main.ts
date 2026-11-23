@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { Blizzard, Weather } from "./render/blizzard";
+import { Breath } from "./render/breath";
 import { Herd } from "./actors/deer";
 import { findForestStart, findStart } from "./world/start";
 import { Sky } from "./render/sky";
@@ -87,6 +88,7 @@ export interface CursorListener {
 
 export interface SoundListener extends StoryCues {
   frame(gust: number, windX: number, windZ: number, yaw: number, speed: number, steps: number, heavy: boolean, chase: number): void;
+  breath?(kind: "inhale" | "exhale", heavy: boolean, effort: number): void;
 }
 
 export interface Game {
@@ -184,6 +186,12 @@ export async function start(canvas: HTMLCanvasElement, options: StartOptions = {
     weather.update(0);
     const blizzard = new Blizzard(seed, fogColor, quality);
     scene.add(blizzard.group);
+
+    // Winter breath: faint vapour blown off by the wind, in lockstep with the breath sounds.
+    const breath = new Breath(seed, fogColor);
+    scene.add(breath.mesh);
+    cleanup.push(() => breath.dispose());
+    const npcMouth = new THREE.Vector3();
 
     // What the walker can see: nothing in the forest comes or goes where this says it would show.
     const sight = new Sight(camera, height);
@@ -331,6 +339,7 @@ export async function start(canvas: HTMLCanvasElement, options: StartOptions = {
       world.fill(s.x, s.z);
       walker.place(s.x, s.z, s.yaw);
       tracks.reset();
+      breath.reset();
       walk = next;
       if (yeti) hunt.begin();
       walker.update(0, steering, world, weather.gust);
@@ -365,6 +374,16 @@ export async function start(canvas: HTMLCanvasElement, options: StartOptions = {
       sky.update(camera);
       const fineHeight = window.innerHeight * Math.min(window.devicePixelRatio || 1, FINE_DPR);
       blizzard.update(dt, weather, camera, walker.velocity, walker.groundY, walker.slope, output.target.height, fineHeight);
+      if (walk !== "yeti" && story.yeti.root.visible && story.yeti.state !== "hidden") {
+        story.yeti.mouth(npcMouth);
+        breath.updateActor(dt, weather, npcMouth, story.yeti.heading, true, story.yeti.state === "chase", camera.position.distanceTo(npcMouth));
+      } else if (walk === "yeti" && hunt.man.root.visible && hunt.man.state !== "hidden") {
+        hunt.man.face(npcMouth);
+        npcMouth.y -= 0.08;
+        breath.updateActor(dt, weather, npcMouth, hunt.man.heading, false, hunt.man.state === "run", camera.position.distanceTo(npcMouth));
+      }
+      const breathEvent = breath.update(dt, weather, camera, walker.velocity, walker.speed, walk === "yeti", t.tension, !t.driving && t.blackout < 0.5);
+      if (breathEvent) options.sound?.breath?.(breathEvent.kind, breathEvent.heavy, breathEvent.effort);
       options.sound?.frame(weather.gust, weather.wind.x, weather.wind.z, walker.yaw, walker.speed, walker.steps, walk === "yeti", t.tension);
       options.cursor?.frame(
         !steering.walking || steering.locked || t.driving || walker.focused,
@@ -386,7 +405,7 @@ export async function start(canvas: HTMLCanvasElement, options: StartOptions = {
     // In development: the pieces, and `step(dt)` to run the walk on a frame at a time without waiting for the screen.
     if (import.meta.env.DEV) {
       Object.assign(window, {
-        __forest: { walker, world, variants, steering, renderer, herd, story, hunt, tracks, sight, weather, output, camera, scene, step, restart: (w: Walk) => restart(0, w) }
+        __forest: { walker, world, variants, steering, renderer, herd, story, hunt, tracks, breath, sight, weather, output, camera, scene, step, restart: (w: Walk) => restart(0, w) }
       });
     }
     let begun = !options.holdStart;

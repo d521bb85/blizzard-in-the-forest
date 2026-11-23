@@ -23,6 +23,8 @@ const MUSIC_CALM = 0.8;
 const MUSIC_CHASE = 1.18;
 const STEPS_CALM = 0.32;
 const STEPS_CHASE = 0.21;
+const BREATH_CALM = 0.22;
+const BREATH_CHASE = 0.17;
 /** D: the score's home pitch class. */
 const HOME = 2;
 
@@ -279,6 +281,105 @@ function creakSample(ctx: BaseAudioContext, rand: Rand): AudioBuffer {
     t += 1 / rate;
   }
   finish(d, 0.85, 9);
+  return buf;
+}
+
+/** Two-pole resonant bandpass filter step for shaping soft breath formants. */
+function svfBand(input: number, f: number, q: number, st: [number, number]): number {
+  const g = 2 * Math.sin((Math.PI * f) / SR);
+  const hp = input - st[0] - st[1] / q;
+  st[1] += g * hp;
+  st[0] += g * st[1];
+  return st[1];
+}
+
+/** A human exhale into freezing air: warm throat cavity and soft lip whisper. */
+function humanExhaleSample(ctx: BaseAudioContext, rand: Rand): AudioBuffer {
+  const seconds = 0.85;
+  const buf = ctx.createBuffer(1, Math.round(SR * seconds), SR);
+  const d = buf.getChannelData(0);
+  const low: [number, number] = [0, 0];
+  const air: [number, number] = [0, 0];
+  for (let i = 0; i < d.length; i++) {
+    const t = i / SR;
+    const u = t / seconds;
+    const n = rand() * 2 - 1;
+    const body = svfBand(n, 480 - 90 * u, 1.8, low);
+    const wisp = svfBand(n, 1450 - 320 * u, 1.4, air);
+    const env = Math.sin(Math.min(1, t / 0.1) * Math.PI * 0.5) * Math.exp(-Math.max(0, t - 0.08) / 0.24);
+    d[i] = (body * 0.55 + wisp * 0.45) * env;
+  }
+  const tail = Math.round(0.05 * SR);
+  for (let i = 0; i < tail; i++) d[d.length - 1 - i] *= i / tail;
+  finish(d, 0.88, 10);
+  return buf;
+}
+
+/** A light human inhale of cold air, audible softly when running hard. */
+function humanInhaleSample(ctx: BaseAudioContext, rand: Rand): AudioBuffer {
+  const seconds = 0.48;
+  const buf = ctx.createBuffer(1, Math.round(SR * seconds), SR);
+  const d = buf.getChannelData(0);
+  const mid: [number, number] = [0, 0];
+  const air: [number, number] = [0, 0];
+  for (let i = 0; i < d.length; i++) {
+    const t = i / SR;
+    const u = t / seconds;
+    const n = rand() * 2 - 1;
+    const body = svfBand(n, 920 + 140 * u, 2.0, mid);
+    const wisp = svfBand(n, 1950 + 200 * u, 1.6, air);
+    const env = u ** 1.35 * (1 - u) ** 0.65;
+    d[i] = (body * 0.5 + wisp * 0.45) * env;
+  }
+  finish(d, 0.82, 10);
+  return buf;
+}
+
+/** A yeti's exhale: slow, deep, heavy breath from a big chest into the frost. */
+function yetiExhaleSample(ctx: BaseAudioContext, rand: Rand): AudioBuffer {
+  const seconds = 1.5;
+  const buf = ctx.createBuffer(1, Math.round(SR * seconds), SR);
+  const d = buf.getChannelData(0);
+  const chest: [number, number] = [0, 0];
+  const snout: [number, number] = [0, 0];
+  let ph = 0;
+  let lp = 0;
+  for (let i = 0; i < d.length; i++) {
+    const t = i / SR;
+    const u = t / seconds;
+    const n = rand() * 2 - 1;
+    const c = svfBand(n, 190 - 45 * u, 2.2, chest);
+    const s = svfBand(n, 620 - 180 * u, 1.5, snout);
+    // Faint, low chest weight under the airflow — never a growl, just deep lungs emptying.
+    ph += (58 - 12 * u) / SR;
+    const pulse = (ph % 1) < 0.28 ? 1 : -0.35;
+    lp += (pulse - lp) * 0.04;
+    const env = Math.sin(Math.min(1, t / 0.2) * Math.PI * 0.5) * Math.exp(-Math.max(0, t - 0.16) / 0.45);
+    d[i] = (c * 0.72 + s * 0.55 + lp * 0.14) * env;
+  }
+  const tail = Math.round(0.08 * SR);
+  for (let i = 0; i < tail; i++) d[d.length - 1 - i] *= i / tail;
+  finish(d, 0.88, 10);
+  return buf;
+}
+
+/** A yeti's slow, deep draw of cold air. */
+function yetiInhaleSample(ctx: BaseAudioContext, rand: Rand): AudioBuffer {
+  const seconds = 0.95;
+  const buf = ctx.createBuffer(1, Math.round(SR * seconds), SR);
+  const d = buf.getChannelData(0);
+  const chest: [number, number] = [0, 0];
+  const throat: [number, number] = [0, 0];
+  for (let i = 0; i < d.length; i++) {
+    const t = i / SR;
+    const u = t / seconds;
+    const n = rand() * 2 - 1;
+    const c = svfBand(n, 260 + 50 * u, 2.1, chest);
+    const th = svfBand(n, 680 + 110 * u, 1.6, throat);
+    const env = u ** 1.45 * (1 - u) ** 0.55;
+    d[i] = (c * 0.65 + th * 0.45) * env;
+  }
+  finish(d, 0.82, 10);
   return buf;
 }
 
@@ -677,6 +778,7 @@ export class Engine {
   readonly music: GainNode;
   readonly wind: GainNode;
   readonly steps: GainNode;
+  readonly breath: GainNode;
   /** The yeti and the hut door. */
   readonly cues: GainNode;
   readonly score: Score;
@@ -694,6 +796,10 @@ export class Engine {
   private growlBuf: AudioBuffer;
   private stompBuf: AudioBuffer;
   private creakBuf: AudioBuffer;
+  private humanExhaleBuf: AudioBuffer;
+  private humanInhaleBuf: AudioBuffer;
+  private yetiExhaleBuf: AudioBuffer;
+  private yetiInhaleBuf: AudioBuffer;
   private ambientBus: GainNode;
   private padBus: BiquadFilterNode;
   private bellBus: GainNode;
@@ -731,6 +837,10 @@ export class Engine {
     this.growlBuf = growlSample(ctx, r);
     this.stompBuf = stompSample(ctx, r);
     this.creakBuf = creakSample(ctx, r);
+    this.humanExhaleBuf = humanExhaleSample(ctx, r);
+    this.humanInhaleBuf = humanInhaleSample(ctx, r);
+    this.yetiExhaleBuf = yetiExhaleSample(ctx, r);
+    this.yetiInhaleBuf = yetiInhaleSample(ctx, r);
 
     // Master: the console's muffled top end, and a gentle limiter.
     this.master = ctx.createGain();
@@ -877,6 +987,12 @@ export class Engine {
     this.steps.connect(this.master);
     send(this.steps, 0.12);
 
+    // Close, intimate breathing in the cold air, with only a trace of the forest hall.
+    this.breath = ctx.createGain();
+    this.breath.gain.value = BREATH_CALM;
+    this.breath.connect(this.master);
+    send(this.breath, 0.1);
+
     // The yeti is heard through the same dark reverb as everything else, a good deal wetter.
     this.cues = ctx.createGain();
     this.cues.gain.value = 0.9;
@@ -1013,6 +1129,8 @@ export class Engine {
       this.music.gain.setTargetAtTime(MUSIC_CHASE, t, 0.3);
       this.steps.gain.cancelScheduledValues(t);
       this.steps.gain.setTargetAtTime(STEPS_CHASE, t, 0.35);
+      this.breath.gain.cancelScheduledValues(t);
+      this.breath.gain.setTargetAtTime(BREATH_CHASE, t, 0.35);
       this.ambientBus.gain.cancelScheduledValues(t);
       this.ambientBus.gain.setTargetAtTime(0.14, t, 0.4);
       this.chaseBus.gain.cancelScheduledValues(t);
@@ -1026,6 +1144,8 @@ export class Engine {
       this.music.gain.setTargetAtTime(MUSIC_CALM, t, 1.1);
       this.steps.gain.cancelScheduledValues(t);
       this.steps.gain.setTargetAtTime(STEPS_CALM, t, 0.9);
+      this.breath.gain.cancelScheduledValues(t);
+      this.breath.gain.setTargetAtTime(BREATH_CALM, t, 0.9);
       this.ambientBus.gain.cancelScheduledValues(t);
       this.ambientBus.gain.setTargetAtTime(1, t, 1.3);
       this.chaseBus.gain.cancelScheduledValues(t);
@@ -1102,6 +1222,28 @@ export class Engine {
     g.gain.setValueAtTime(0.28 + 0.5 * pace, t);
     src.start(t);
   }
+
+  /** One breath in the cold air (`heavy`: the yeti's deeper, slower lungs; `effort` 0..1). */
+  breathe(t: number, kind: "inhale" | "exhale", heavy: boolean, effort: number): void {
+    const e = clamp(effort, 0, 1);
+    const jitter = 0.95 + this.rand() * 0.1;
+    if (heavy) {
+      const buf = kind === "exhale" ? this.yetiExhaleBuf : this.yetiInhaleBuf;
+      const rate = (0.92 + e * 0.24) * jitter;
+      const level = kind === "exhale" ? 0.44 + e * 0.28 : 0.13 + e * 0.2;
+      const [src, g] = this.voice(buf, rate, this.breath, (this.rand() - 0.5) * 0.06, false);
+      g.gain.setValueAtTime(level, t);
+      src.start(t);
+      return;
+    }
+    if (kind === "inhale" && e <= 0.25) return;
+    const buf = kind === "exhale" ? this.humanExhaleBuf : this.humanInhaleBuf;
+    const rate = (0.94 + e * 0.24) * jitter;
+    const level = kind === "exhale" ? 0.28 + e * 0.26 : (e - 0.25) * 0.26;
+    const [src, g] = this.voice(buf, rate, this.breath, (this.rand() - 0.5) * 0.06, false);
+    g.gain.setValueAtTime(level, t);
+    src.start(t);
+  }
 }
 
 /**
@@ -1118,6 +1260,7 @@ export class Soundscape {
   private nextWind = 0;
   private chase = 0;
   private appliedChase = 0;
+  private quietBreathUntil = 0;
 
   constructor() {
     document.addEventListener("visibilitychange", () => this.sync());
@@ -1190,7 +1333,22 @@ export class Soundscape {
     const ctx = this.ctx;
     const engine = this.engine;
     if (!ctx || !engine || !this.on || ctx.state !== "running") return;
-    engine[name](ctx.currentTime + 0.01, clamp(pan, -1, 1), clamp(level, 0, 1));
+    const now = ctx.currentTime;
+    // Keep the yeti's own roar/snarl clear of quiet breathing.
+    if (name === "growl" && Math.abs(pan) < 0.05 && level >= 0.4) {
+      this.quietBreathUntil = Math.max(this.quietBreathUntil, now + 1.8);
+    }
+    engine[name](now + 0.01, clamp(pan, -1, 1), clamp(level, 0, 1));
+  }
+
+  /** One breath from the walker, timed with the visible frost vapour. */
+  breath(kind: "inhale" | "exhale", heavy: boolean, effort: number): void {
+    const ctx = this.ctx;
+    const engine = this.engine;
+    if (!ctx || !engine || !this.on || ctx.state !== "running") return;
+    const now = ctx.currentTime;
+    if (now < this.quietBreathUntil) return;
+    engine.breathe(now + 0.01, kind, heavy, effort);
   }
 
   /** Called every frame with the weather, the walker (`heavy`: the walker is the yeti), and chase intensity 0..1. */
