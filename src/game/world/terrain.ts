@@ -3,6 +3,23 @@ import { createSimplex2, fbm, smoothstep, type Noise2 } from "../lib/noise";
 
 export type HeightFn = (x: number, z: number) => number;
 
+/** A levelled clearing in the snowfield: flat within `flat`, blending smoothly out to `blend`. */
+interface LevelPad {
+  x: number;
+  z: number;
+  y: number;
+  flat: number;
+  blend: number;
+  flat2: number;
+  blend2: number;
+}
+
+/** The snowfield's height, with clearings that can be levelled flat under something built on it. */
+export interface HeightField extends HeightFn {
+  level(x: number, z: number, y: number, flat: number, blend: number): void;
+  resetLevels(): void;
+}
+
 /** How deep a stream bed lies below the snowfield around it, in metres. */
 const HOLLOW_DEPTH = 2.3;
 
@@ -22,21 +39,40 @@ export function createHollows(seed: number): Noise2 {
 }
 
 /** Infinite rolling snowfield with soft wind-blown drifts, cut by shallow stream beds. */
-export function createHeightField(seed: number): HeightFn {
+export function createHeightField(seed: number): HeightField {
   const large = createSimplex2(seed ^ 0x9e3779b9);
   const medium = createSimplex2(seed ^ 0x7f4a7c15);
   const drift = createSimplex2(seed ^ 0x2545f491);
   const hollows = createHollows(seed);
+  const pads: LevelPad[] = [];
 
-  return (x, z) => {
+  const fn = ((x: number, z: number) => {
     const hills = fbm(large, x * 0.0055, z * 0.0055, 4) * 11;
     const swells = medium(x * 0.035, z * 0.035) * 0.8;
     // Elongated drifts: stretched across the prevailing wind.
     const u = x * 0.8 + z * 0.6;
     const v = -x * 0.6 + z * 0.8;
     const drifts = drift(u * 0.11, v * 0.035) * 0.35 + drift(u * 0.4, v * 0.12) * 0.08;
-    return hills + swells + drifts - hollows(x, z) * HOLLOW_DEPTH;
+    let h = hills + swells + drifts - hollows(x, z) * HOLLOW_DEPTH;
+    for (let i = 0; i < pads.length; i++) {
+      const p = pads[i];
+      const dx = x - p.x;
+      const dz = z - p.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 >= p.blend2) continue;
+      if (d2 <= p.flat2) h = p.y;
+      else h += (p.y - h) * (1 - smoothstep(p.flat, p.blend, Math.sqrt(d2)));
+    }
+    return h;
+  }) as HeightField;
+
+  fn.level = (x, z, y, flat, blend) => {
+    pads.push({ x, z, y, flat, blend, flat2: flat * flat, blend2: blend * blend });
   };
+  fn.resetLevels = () => {
+    pads.length = 0;
+  };
+  return fn;
 }
 
 export function heightGradient(h: HeightFn, x: number, z: number, out: THREE.Vector2): THREE.Vector2 {

@@ -358,7 +358,7 @@ export class Hut {
   private body: THREE.BufferGeometry;
   private doorGeo: THREE.BufferGeometry;
   private floorGeo: THREE.BufferGeometry;
-  /** The room's floor, raised over any snow the slope pushes up inside. */
+  /** The room's board floor and furniture, fixed flush with the sill. */
   private floor: THREE.Mesh;
   private hinge = new THREE.Group();
   private opening = 0;
@@ -386,10 +386,11 @@ export class Hut {
     // A little dark vent high in the front gable.
     quad(b, [v(-0.16, WALL + 0.55, front + 0.01), v(0.16, WALL + 0.55, front + 0.01), v(0.16, WALL + 0.82, front + 0.01), v(-0.16, WALL + 0.82, front + 0.01)], 0.03);
 
-    // Door frame: two posts and a lintel.
-    block(b, DOOR_L - 0.12, 0, D / 2 - 0.11, DOOR_L - 0.02, DOOR_H + 0.08, front - 0.02, 0.3);
-    block(b, DOOR_R + 0.02, 0, D / 2 - 0.11, DOOR_R + 0.12, DOOR_H + 0.08, front - 0.02, 0.3);
-    block(b, DOOR_L - 0.14, DOOR_H, D / 2 - 0.12, DOOR_R + 0.14, DOOR_H + 0.16, front - 0.01, 0.32, SNOW);
+    // Door frame: two posts, a lintel and a sill bridging the wall to the floor.
+    block(b, DOOR_L - 0.12, 0, IZ - 0.01, DOOR_L - 0.02, DOOR_H + 0.08, front - 0.02, 0.3);
+    block(b, DOOR_R + 0.02, 0, IZ - 0.01, DOOR_R + 0.12, DOOR_H + 0.08, front - 0.02, 0.3);
+    block(b, DOOR_L - 0.14, DOOR_H, IZ - 0.01, DOOR_R + 0.14, DOOR_H + 0.16, front - 0.01, 0.32, SNOW);
+    block(b, DOOR_L - 0.12, -0.22, IZ - 0.03, DOOR_R + 0.12, 0.024, front - 0.02, 0.3, 0.34);
 
     // The window: black panes behind a cross of glazing bars, a pale carved frame with a
     // peaked top and a sill under snow, and shutters standing open either side.
@@ -500,13 +501,13 @@ export class Hut {
     this.hinge.position.set(DOOR_L, 0, D / 2);
     this.hinge.add(new THREE.Mesh(this.doorGeo, material));
 
-    // The floor, and all that stands on it: boards running in from the door, a table against
-    // the back wall straight ahead of the door's gap, a chest in the corner beside it, a bed
-    // along the right-hand wall under the window, and a little snow blown in through the door.
+    // The floor, and all that stands on it: level boards running in from the door, a table against
+    // the back wall straight ahead of the door's gap, a chest in the corner beside it, and a bed
+    // along the right-hand wall under the window.
     const f = new GeoBuilder();
     f.matter = MATTER.plank;
-    // Dark under the cracks between the boards, a few centimetres down: any closer and the wobbling vertices let it show through them.
-    quad(f, [v(-IX, -0.04, -IZ), v(IX, -0.04, -IZ), v(IX, -0.04, IZ), v(-IX, -0.04, IZ)], SEAM);
+    // Dark under the cracks between the boards, running into the walls so nothing outside can show through.
+    quad(f, [v(-W / 2, -0.04, -D / 2), v(W / 2, -0.04, -D / 2), v(W / 2, -0.04, D / 2), v(-W / 2, -0.04, D / 2)], SEAM);
     const planks = 13;
     for (let i = 0; i < planks; i++) {
       const x0 = -IX + (2 * IX * i) / planks + 0.008;
@@ -517,7 +518,6 @@ export class Hut {
     table(f, -0.85, -IZ + 0.03, -0.05, -IZ + 0.63);
     chest(f, -IX + 0.08, -IZ + 0.05, -IX + 0.7, -IZ + 0.47);
     bed(f, IX - 0.74, -IZ, IX - 0.01, -IZ + 1.9);
-    heap(f, rand, DOOR_X + 0.2, IZ - 0.25, 0, 0.32, 0.2, 0.06, true);
     dimIndoors(f, 0);
     this.floorGeo = f.build();
     this.floor = new THREE.Mesh(this.floorGeo, material);
@@ -535,19 +535,6 @@ export class Hut {
     this.group.rotation.set(0, this.yaw, 0);
     this.group.visible = true;
     this.setDoor(0);
-  }
-
-  /** Lifts the floor over the snowfield wherever it rises inside the walls. */
-  fitFloor(ground: (x: number, z: number) => number): void {
-    const p = new THREE.Vector3();
-    let top = -Infinity;
-    for (let i = 0; i <= 4; i++) {
-      for (let j = 0; j <= 4; j++) {
-        this.toWorld((i / 4 - 0.5) * W, 0, (j / 4 - 0.5) * D, p);
-        top = Math.max(top, ground(p.x, p.z));
-      }
-    }
-    this.floor.position.y = Math.max(0.02, top - this.position.y + 0.06);
   }
 
   hide(): void {
@@ -614,6 +601,10 @@ export class Hut {
 
   /** Radius of ground it needs kept clear of trees. */
   static readonly CLEARING = 8;
+  /** Radius levelled flat under the hut and its drifts (wider than the walls by a grid square, so no tilted triangle reaches inside). */
+  static readonly PAD = 4.2;
+  /** How far the hut sits above the levelled snow outside, keeping the boards clear of it. */
+  static readonly STEP = 0.1;
   /** For setDoor(): pulled shut behind whoever went in. */
   static readonly SHUT = -AJAR / (OPEN - AJAR);
   /** Corners of the footprint (with the drifts), in its own frame, for judging the ground; the last is the doorstep. */

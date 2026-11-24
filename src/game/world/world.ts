@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { injectBlizzardFog } from "../render/fog";
 import { injectRetro, SNOW_TEXELS } from "../render/retro";
 import { createSimplex2, hash3, mulberry32, smoothstep } from "../lib/noise";
-import { buildTerrainGeometry, createHollows, drawnHeight, type HeightFn } from "./terrain";
+import { buildTerrainGeometry, createHollows, drawnHeight, type HeightField } from "./terrain";
 import { LogBuilder } from "./logs";
 import { MATTER, type TreeKind, type TreeVariant } from "./trees";
 import type { Collider } from "./collider";
@@ -61,6 +61,8 @@ interface Chunk {
   cz: number;
   /** The snowfield and the fallen trunks; the trees are drawn in batches across chunks. */
   group: THREE.Group;
+  /** The snowfield tile itself, rebuilt if a clearing levels the ground under it. */
+  terrain: THREE.Mesh;
   /** The fallen trunks' meshes in the group, rebuilt with the trees when a clearing is made. */
   logs: THREE.Mesh[];
   colliders: Collider[];
@@ -224,12 +226,12 @@ export class World {
   private kinds = new Map<TreeKind, number[]>();
   /** Colliders of things placed into the world from outside it (a signpost, a hut). */
   private extras: Collider[] = [];
-  /** Circles kept free of trees, drifts and fallen trunks. */
-  private clearings: { x: number; z: number; r: number }[] = [];
+  /** Circles kept free of trees, drifts and fallen trunks (and optionally levelled flat). */
+  private clearings: { x: number; z: number; r: number; levelled: boolean }[] = [];
 
   constructor(
     private seed: number,
-    private height: HeightFn,
+    private height: HeightField,
     private variants: TreeVariant[],
     private snowMaterial: THREE.Material,
     private treeMaterial: THREE.Material,
@@ -426,15 +428,20 @@ export class World {
 
   /**
    * Keeps a circle free of trees, drifts and fallen trunks, rebuilding the chunks
-   * already loaded there (call it only for a spot the fog hides).
+   * already loaded there (call it only for a spot the fog hides). If `level` is given,
+   * the snowfield is also levelled flat at `level.y` within `level.flat` metres,
+   * blending smoothly back into the surrounding snow by `r`.
    */
-  clear(x: number, z: number, r: number): void {
-    this.clearings.push({ x, z, r });
+  clear(x: number, z: number, r: number, level?: { y: number; flat: number }): void {
+    this.clearings.push({ x, z, r, levelled: level !== undefined });
+    if (level) this.height.level(x, z, level.y, level.flat, r);
     for (const chunk of [...this.chunks.values()]) {
       const nx = Math.max(chunk.cx * CHUNK, Math.min(x, (chunk.cx + 1) * CHUNK));
       const nz = Math.max(chunk.cz * CHUNK, Math.min(z, (chunk.cz + 1) * CHUNK));
-      if ((nx - x) ** 2 + (nz - z) ** 2 > (r + 10) ** 2) continue;
-      // The snowfield stays as it is; only what stands on it is placed again.
+      const d2 = (nx - x) ** 2 + (nz - z) ** 2;
+      if (d2 > (r + 10) ** 2) continue;
+      // Only chunks whose vertices or normals touch the blend ring need their snowfield rebuilt.
+      if (level && d2 <= (r + 1) ** 2) this.rebuildTerrain(chunk);
       this.populate(chunk);
     }
   }
@@ -444,10 +451,33 @@ export class World {
     this.extras = this.extras.filter((c) => !gone.has(c));
   }
 
-  /** Forgets everything placed from outside: extra colliders and clearings. */
+  /** Forgets everything placed from outside: extra colliders, clearings and levelled ground. */
   clearProps(): void {
+    const old = this.clearings.length ? this.clearings.slice() : null;
     this.extras.length = 0;
     this.clearings.length = 0;
+    this.height.resetLevels();
+    if (!old) return;
+    const dirtyProps = new Set<Chunk>();
+    const dirtyTerrain = new Set<Chunk>();
+    for (const c of old) {
+      for (const chunk of this.chunks.values()) {
+        const nx = Math.max(chunk.cx * CHUNK, Math.min(c.x, (chunk.cx + 1) * CHUNK));
+        const nz = Math.max(chunk.cz * CHUNK, Math.min(c.z, (chunk.cz + 1) * CHUNK));
+        const d2 = (nx - c.x) ** 2 + (nz - c.z) ** 2;
+        if (d2 <= (c.r + 10) ** 2) dirtyProps.add(chunk);
+        if (c.levelled && d2 <= (c.r + 1) ** 2) dirtyTerrain.add(chunk);
+      }
+    }
+    for (const chunk of dirtyTerrain) this.rebuildTerrain(chunk);
+    for (const chunk of dirtyProps) this.populate(chunk);
+  }
+
+  private rebuildTerrain(chunk: Chunk): void {
+    const ox = chunk.cx * CHUNK;
+    const oz = chunk.cz * CHUNK;
+    chunk.terrain.geometry.dispose();
+    chunk.terrain.geometry = buildTerrainGeometry(this.height, ox, oz, CHUNK, SEGMENTS);
   }
 
   private pushExtras(minX: number, minZ: number, maxX: number, maxZ: number, out: Collider[]): void {
@@ -537,9 +567,10 @@ export class World {
     const oz = cz * CHUNK;
     const group = new THREE.Group();
     group.position.set(ox, 0, oz);
-    group.add(new THREE.Mesh(buildTerrainGeometry(this.height, ox, oz, CHUNK, SEGMENTS), this.snowMaterial));
+    const terrain = new THREE.Mesh(buildTerrainGeometry(this.height, ox, oz, CHUNK, SEGMENTS), this.snowMaterial);
+    group.add(terrain);
     this.group.add(group);
-    const chunk: Chunk = { key: keyOf(cx, cz), cx, cz, group, logs: [], colliders: [], stands: [], bounds: new THREE.Box3(), serial: 0 };
+    const chunk: Chunk = { key: keyOf(cx, cz), cx, cz, group, terrain, logs: [], colliders: [], stands: [], bounds: new THREE.Box3(), serial: 0 };
     this.populate(chunk);
     this.chunks.set(chunk.key, chunk);
     return chunk;

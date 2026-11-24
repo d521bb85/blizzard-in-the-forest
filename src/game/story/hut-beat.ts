@@ -142,21 +142,18 @@ export class HutBeat {
           lo = Math.min(lo, g);
           hi = Math.max(hi, g);
         }
-        const step = Hut.FOOTPRINT[Hut.FOOTPRINT.length - 1];
-        const doorGround = height(x + step[0] * c + step[1] * s, z - step[0] * s + step[1] * c);
-        // Too steep for the foundations to reach, or the door would be buried: not here.
-        if (hi - lo > HUT_UNEVEN || doorGround - lo > 0.9) continue;
+        // Too steep for a level clearing to sit naturally in the slope: not here.
+        if (hi - lo > HUT_UNEVEN) continue;
         const score = -(hi - lo) - Math.abs(off) * aside - (d === dists[0] ? 0 : 0.2);
-        // The floor goes level with the snow at the door, so the door is never buried.
-        if (!best || score > best.score) best = { x, z, y: Math.max(doorGround - 0.05, lo + 0.1), score };
+        // Level the clearing at the middle of the slope, so the snow blends gently all round.
+        if (!best || score > best.score) best = { x, z, y: (lo + hi) * 0.5, score };
       }
     }
     if (!best) return false;
     // The clearing where it stood stays bare until clearProps(): nothing grows back in sight.
     world.removeColliders(this.colliders);
-    world.clear(best.x, best.z, Hut.CLEARING);
-    this.hut.place(best.x, best.y, best.z, p.x - best.x, p.z - best.z);
-    this.hut.fitFloor(height);
+    world.clear(best.x, best.z, Hut.CLEARING, { y: best.y, flat: Hut.PAD });
+    this.hut.place(best.x, best.y + Hut.STEP, best.z, p.x - best.x, p.z - best.z);
     this.colliders = this.hut.colliders();
     world.addColliders(this.colliders);
     return true;
