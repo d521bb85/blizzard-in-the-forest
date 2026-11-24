@@ -138,20 +138,25 @@ export async function start(canvas: HTMLCanvasElement, options: StartOptions = {
     sun.position.set(0.3, 1, 0.2);
     scene.add(hemi, sun);
 
-    /** Black and white, or colour: the switch every shader reads, the air and the lights. Call it with the screen black. */
-    const setColour = (on: boolean) => {
-      blizzardUniforms.uColour.value = on ? 1 : 0;
-      if (on) {
-        setTinted(fogColor, FOG_TINT, Math.pow(COLOUR_FOG_GRAY, 2.2));
-        setTinted(hemi.color, SKY_TINT, 1);
-        setTinted(sun.color, SUN_TINT, 1);
-      } else {
-        fogColor.setScalar(fogLight);
-        hemi.color.setScalar(1);
-        sun.color.setScalar(1);
-      }
+    const bwFog = new THREE.Color().setScalar(fogLight);
+    const colFog = new THREE.Color();
+    setTinted(colFog, FOG_TINT, Math.pow(COLOUR_FOG_GRAY, 2.2));
+    const bwLight = new THREE.Color().setScalar(1);
+    const colSky = new THREE.Color();
+    setTinted(colSky, SKY_TINT, 1);
+    const colSun = new THREE.Color();
+    setTinted(colSun, SUN_TINT, 1);
+
+    /** Black and white (0) to colour (1): the blend every shader reads, the air and the lights. */
+    let colour = 0;
+    const setColour = (t: number) => {
+      colour = THREE.MathUtils.clamp(t, 0, 1);
+      blizzardUniforms.uColour.value = colour;
+      fogColor.copy(bwFog).lerp(colFog, colour);
+      hemi.color.copy(bwLight).lerp(colSky, colour);
+      sun.color.copy(bwLight).lerp(colSun, colour);
     };
-    setColour(false);
+    setColour(0);
     // The sun itself, low behind the clouds on the same side as the light.
     const sunAzimuth = Math.atan2(sun.position.z, sun.position.x);
     const sunElevation = THREE.MathUtils.degToRad(SUN_ELEVATION);
@@ -327,7 +332,7 @@ export async function start(canvas: HTMLCanvasElement, options: StartOptions = {
         }
       }
       // Every walk begins as the first one did: standing still, in clear, calm air, a deer crossing ahead.
-      story.reset();
+      story.reset(next === "colour");
       hunt.reset();
       steering.setWalking(false);
       weather.reset();
@@ -337,6 +342,7 @@ export async function start(canvas: HTMLCanvasElement, options: StartOptions = {
       walker.body = yeti ? YETI_BODY : PERSON;
       const s = yeti ? findForestStart(world, height, cx, cz) : findStart(world, height, cx, cz);
       world.fill(s.x, s.z);
+      if (next === "colour") story.placeStartHut(s.x, s.z, s.yaw);
       walker.place(s.x, s.z, s.yaw);
       tracks.reset();
       breath.reset();
@@ -344,7 +350,8 @@ export async function start(canvas: HTMLCanvasElement, options: StartOptions = {
       if (yeti) hunt.begin();
       walker.update(0, steering, world, weather.gust);
       // Nothing is drawn until the next frame, and that one is black.
-      setColour(next === "colour");
+      // The second walk starts in black and white and blooms into colour by the time the sign appears.
+      setColour(0);
       output.material.uniforms.uThermal.value = yeti ? 1 : 0;
       fade = 0;
       black = hold;
@@ -367,6 +374,11 @@ export async function start(canvas: HTMLCanvasElement, options: StartOptions = {
       camera.updateMatrixWorld();
       sight.update(dt);
       t.update(dt);
+      if (walk === "colour" && colour < 1) {
+        const p = story.signProgress;
+        const eased = p * p * (3 - 2 * p);
+        if (eased > colour) setColour(eased);
+      }
       // With the yeti about, the deer run off into the fog, and no more come.
       if (t.chasing) herd.scatter();
       herd.update(dt, walker.position, walker.velocity, walker.yaw);

@@ -607,6 +607,9 @@ export class Hut {
   static readonly STEP = 0.1;
   /** For setDoor(): pulled shut behind whoever went in. */
   static readonly SHUT = -AJAR / (OPEN - AJAR);
+  /** Door horizontal offset and front wall distance from the cabin's centre (local frame). */
+  static readonly DOOR_X = DOOR_X;
+  static readonly FRONT = D / 2;
   /** Corners of the footprint (with the drifts), in its own frame, for judging the ground; the last is the doorstep. */
   static readonly FOOTPRINT: [number, number][] = [
     [-W / 2 - 0.8, -D / 2 - 0.8],

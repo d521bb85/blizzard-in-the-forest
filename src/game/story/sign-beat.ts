@@ -90,6 +90,16 @@ export class SignBeat {
     this.post = new Signpost(woodMaterial);
   }
 
+  /** 0..1: how close the signpost is to appearing (1 once due, standing, or read). */
+  get progress(): number {
+    if (this.read || this.up || this.due) return 1;
+    return THREE.MathUtils.clamp(1 - this.wait / SIGN_AFTER, 0, 1);
+  }
+
+  setLines(lines: readonly string[]): void {
+    this.post.setLines(lines);
+  }
+
   reset(): void {
     this.take();
     this.hush();

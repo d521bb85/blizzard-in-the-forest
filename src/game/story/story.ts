@@ -1,4 +1,6 @@
 import * as THREE from "three";
+import { Hut } from "../props/hut";
+import { COLOUR_SIGN_LINES, SIGN_LINES } from "../props/sign";
 import { blizzardUniforms } from "../render/fog";
 import { Caught } from "./caught";
 import type { Stage, StoryCues, StoryEvent } from "./context";
@@ -39,6 +41,7 @@ export class Story {
   private signs: SignBeat;
   private pursuit: YetiBeat;
   private refuge: HutBeat;
+  private startHut: Hut;
   private entering: EnterHut;
   private caught: Caught;
   /** Once the sign is read: the yeti comes no sooner than the first of these (on the clock), and by the second. */
@@ -58,9 +61,10 @@ export class Story {
     this.signs = new SignBeat(this.stage, woodMaterial, (visible) => this.emit({ type: "sign", visible }));
     this.pursuit = new YetiBeat(this.stage);
     this.refuge = new HutBeat(this.stage, woodMaterial);
+    this.startHut = new Hut(woodMaterial);
     this.entering = new EnterHut(this.stage, this.refuge.hut);
     this.caught = new Caught(this.stage, this.pursuit.yeti);
-    this.group.add(this.signs.post.group, this.refuge.hut.group, this.pursuit.yeti.root);
+    this.group.add(this.signs.post.group, this.refuge.hut.group, this.startHut.group, this.pursuit.yeti.root);
     this.ready = this.signs.post.ready;
   }
 
@@ -83,8 +87,14 @@ export class Story {
   showForWarmUp(): void {
     this.signs.post.place(0, 0, 0, 1, () => -500);
     this.refuge.hut.place(0, -500, 0, 0, 1);
+    this.startHut.place(0, -500, 0, 0, 1);
     this.pursuit.yeti.root.position.set(0, -500, 0);
     this.pursuit.yeti.root.visible = true;
+  }
+
+  /** 0..1: how far the walk has progressed towards the signpost appearing. */
+  get signProgress(): number {
+    return this.phase === "waiting" ? 0 : this.signs.progress;
   }
 
   /** Whether the yeti is about: the deer make off, and keep away. */
@@ -108,19 +118,51 @@ export class Story {
   }
 
   /** Back to the very beginning. Call it with the screen black. */
-  reset(): void {
+  reset(colour = false): void {
     this.phase = "waiting";
     this.clock = 0;
     this.yetiFrom = Infinity;
     this.yetiBy = Infinity;
     this.seizedByYeti = false;
     this.signs.reset();
+    this.signs.setLines(colour ? COLOUR_SIGN_LINES : SIGN_LINES);
     this.pursuit.reset();
     this.refuge.reset();
+    this.startHut.hide();
     this.entering.reset();
     this.caught.reset();
     this.stage.world.clearProps();
     this.stage.steering.locked = false;
+  }
+
+  /**
+   * Stands the cabin the walker just left directly behind them at (x, z), its door shut
+   * and walls solid so it cannot be entered again. Call before placing the walker, with
+   * the screen black.
+   */
+  placeStartHut(x: number, z: number, yaw: number): void {
+    const { world, height } = this.stage;
+    const fx = -Math.sin(yaw);
+    const fz = -Math.cos(yaw);
+    const hutYaw = Math.atan2(fx, fz);
+    const c = Math.cos(hutYaw);
+    const s = Math.sin(hutYaw);
+    const lx = Hut.DOOR_X;
+    const lz = Hut.FRONT + 2.2;
+    const hx = x - (lx * c + lz * s);
+    const hz = z - (-lx * s + lz * c);
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const [px, pz] of Hut.FOOTPRINT) {
+      const g = height(hx + px * c + pz * s, hz - px * s + pz * c);
+      lo = Math.min(lo, g);
+      hi = Math.max(hi, g);
+    }
+    const y = (lo + hi) * 0.5;
+    world.clear(hx, hz, Hut.CLEARING, { y, flat: Hut.PAD });
+    this.startHut.place(hx, y + Hut.STEP, hz, fx, fz);
+    this.startHut.setDoor(Hut.SHUT);
+    world.addColliders(this.startHut.colliders());
   }
 
   /** For trying the story out: skips the wait for whatever comes next. */
@@ -233,6 +275,7 @@ export class Story {
   dispose(): void {
     this.signs.dispose();
     this.refuge.dispose();
+    this.startHut.dispose();
     this.pursuit.dispose();
   }
 }

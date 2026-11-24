@@ -8,6 +8,8 @@ import type { Collider } from "../world/collider";
 
 /** What is carved into the board, line by line (the page shows the same words). */
 export const SIGN_LINES = ["TREAD SOFTLY IN THESE WOODS,", "AND SOFTER STILL WHEN", "THE SNOW BEGINS TO HOWL."];
+/** What is carved into the board on the second walk, once the yeti is known. */
+export const COLOUR_SIGN_LINES = ["THE SNOW COVERS YOUR TRACKS,", "BUT NOT FROM WHAT WALKS", "THESE WOODS WITH YOU."];
 
 /** The board's width and height, in metres. */
 export const BOARD_W = 1.6;
@@ -114,7 +116,7 @@ function hang(g: THREE.BufferGeometry): THREE.BufferGeometry {
  * and the words cut into them, dark in the grooves with a lighter lip below, as a knife
  * leaves them. The damage keeps off the letters.
  */
-function paintBoard(canvas: HTMLCanvasElement): void {
+function paintBoard(canvas: HTMLCanvasElement, lines: readonly string[] = SIGN_LINES): void {
   const ctx = canvas.getContext("2d")!;
   const rand = mulberry32(0x5167);
 
@@ -128,10 +130,10 @@ function paintBoard(canvas: HTMLCanvasElement): void {
   m.textBaseline = "middle";
   m.font = `${FONT_PX}px "Jersey 10", monospace`;
   // Squeezed a little sideways if the longest line would run off the board.
-  const widest = Math.max(...SIGN_LINES.map((line) => m.measureText(line).width));
+  const widest = Math.max(...lines.map((line) => m.measureText(line).width));
   const squeeze = Math.min(1, (TEX_W - 28) / widest);
   m.setTransform(squeeze, 0, 0, 1, (TEX_W / 2) * (1 - squeeze), 0);
-  SIGN_LINES.forEach((line, i) => m.fillText(line, TEX_W / 2, TEX_H / 2 + (i - (SIGN_LINES.length - 1) / 2) * LINE_GAP));
+  lines.forEach((line, i) => m.fillText(line, TEX_W / 2, TEX_H / 2 + (i - (lines.length - 1) / 2) * LINE_GAP));
   const cut = m.getImageData(0, 0, TEX_W, TEX_H).data;
   const on = (x: number, y: number) => x >= 0 && y >= 0 && x < TEX_W && y < TEX_H && cut[(y * TEX_W + x) * 4 + 3] > 110;
   const lettered = (x: number, y: number) => {
@@ -258,13 +260,15 @@ export class Signpost {
    * left to build on the frame it first comes into view.
    */
   readonly ready: Promise<void>;
+  private canvas: HTMLCanvasElement;
+  private lines: readonly string[] = SIGN_LINES;
   private texture: THREE.CanvasTexture;
   private faceMaterial: THREE.MeshStandardMaterial;
   private wood: THREE.BufferGeometry;
   private face: THREE.ShapeGeometry;
 
   constructor(woodMaterial: THREE.Material) {
-    const canvas = document.createElement("canvas");
+    const canvas = (this.canvas = document.createElement("canvas"));
     canvas.width = TEX_W;
     canvas.height = TEX_H;
     const tex = (this.texture = new THREE.CanvasTexture(canvas));
@@ -276,7 +280,7 @@ export class Signpost {
     // A board that cannot be painted (no 2D canvas, pixels not readable) stays blank: the walk goes on without the words.
     this.ready = fontLoaded()
       .then(() => {
-        paintBoard(canvas);
+        paintBoard(canvas, this.lines);
         tex.needsUpdate = true;
       })
       .catch((err) => console.warn("The signpost's board could not be painted", err));
@@ -335,6 +339,14 @@ export class Signpost {
     this.group.position.set(x, y - 0.03, z);
     this.group.rotation.set(0, Math.atan2(this.facing.x, this.facing.y), 0);
     this.group.visible = true;
+  }
+
+  /** Repaints the board with a new set of lines (call with the screen black). */
+  setLines(lines: readonly string[]): void {
+    if (this.lines === lines) return;
+    this.lines = lines;
+    paintBoard(this.canvas, lines);
+    this.texture.needsUpdate = true;
   }
 
   hide(): void {

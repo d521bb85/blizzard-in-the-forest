@@ -152,13 +152,19 @@ const snapCredits = () => snapEven(credits, creditLink);
 window.addEventListener("resize", snapCredits);
 document.fonts?.ready.then(snapCredits);
 
+const signParts = document.querySelectorAll<HTMLElement>("#sign-text .part");
+const SIGN_COPY = {
+  plain: ["Tread softly in these woods,", "and softer still when the snow begins to howl."],
+  colour: ["The snow covers your tracks,", "but not from what walks these woods with you."]
+} as const;
+
 const showEnding = (which: Ending) => {
   ending = which;
   // The end screen is still hidden: put up the words for this one before it fades in.
   for (const note of notes) note.hidden = note.dataset.ending !== which;
   const last = which === "yeti-won";
   endingScreen.classList.toggle("with-letter", last);
-  startOver.textContent = "Start over";
+  startOver.textContent = which === "first" || which === "second" ? "Continue" : "Start over";
   snapCredits();
   body.classList.add("ended");
   cancel(focusTimer);
@@ -167,6 +173,12 @@ const showEnding = (which: Ending) => {
 
 const onStory = (e: StoryEvent) => {
   if (e.type === "sign") {
+    if (e.visible) {
+      const copy = game?.walk === "colour" ? SIGN_COPY.colour : SIGN_COPY.plain;
+      signParts.forEach((part, i) => {
+        part.textContent = copy[i] ?? "";
+      });
+    }
     body.classList.toggle("sign-text", e.visible);
     if (e.visible) snapHints();
   } else if (e.type === "inside" || e.type === "caught") {
