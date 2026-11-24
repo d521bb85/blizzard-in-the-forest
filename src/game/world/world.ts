@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { injectBlizzardFog } from "../render/fog";
 import { injectRetro, SNOW_TEXELS } from "../render/retro";
 import { createSimplex2, hash3, mulberry32, smoothstep } from "../lib/noise";
-import { buildTerrainGeometry, createHollows, drawnHeight, type HeightField } from "./terrain";
+import { buildTerrainGeometry, createHills, createHollows, drawnHeight, prevailingWindAngle, type HeightField } from "./terrain";
 import { LogBuilder } from "./logs";
 import { MATTER, type TreeKind, type TreeVariant } from "./trees";
 import type { Collider } from "./collider";
@@ -16,35 +16,89 @@ const SPAWN_CLEAR = 9;
 
 /** Drifts no taller than this (in metres) can be walked over. */
 const MAX_CLIMB = 0.8;
-/** Places per chunk where a fallen trunk may lie, and the chance of one in open ground and in deep forest. */
-const LOG_TRIES = 3;
-const LOG_OPEN = 0.05;
-const LOG_FOREST = 0.3;
+/** Places per chunk where a fallen trunk may lie (biotope sets the chance). */
+const LOG_TRIES = 4;
+/** Minimum navigable clearance between solid trunk/boulder walk colliders (m). */
+const MIN_PASS_GAP = 1.45;
 /** Texels per metre of the "texture" on trees and everything else of wood and stone. */
 const BARK_TEXELS = 14;
 
-/** How each kind of thing stands in the snow: its range of sizes, how deep it is sunk, how far it may lean. */
-const PLACE: Record<TreeKind, { scale: [number, number]; sink: [number, number]; tilt: number }> = {
-  spruce: { scale: [0.75, 1.25], sink: [0.25, 0.55], tilt: 0.045 },
-  young: { scale: [0.75, 1.25], sink: [0.25, 0.55], tilt: 0.045 },
-  pine: { scale: [0.8, 1.2], sink: [0.25, 0.55], tilt: 0.05 },
-  birch: { scale: [0.75, 1.2], sink: [0.2, 0.45], tilt: 0.1 },
-  bare: { scale: [0.75, 1.25], sink: [0.25, 0.55], tilt: 0.045 },
-  snag: { scale: [0.75, 1.25], sink: [0.25, 0.55], tilt: 0.12 },
-  mound: { scale: [0.6, 1.5], sink: [0, 0], tilt: 0 },
-  bush: { scale: [0.7, 1.3], sink: [0, 0.15], tilt: 0.1 },
-  grass: { scale: [0.7, 1.3], sink: [0, 0.1], tilt: 0.1 },
-  stump: { scale: [0.8, 1.25], sink: [0.05, 0.25], tilt: 0.08 },
-  rock: { scale: [0.7, 1.4], sink: [0.05, 0.3], tilt: 0.25 }
+/** How each kind of thing stands in the snow: scale range, sink depth, lean tilt, and canopy inhibition radius. */
+const PLACE: Record<TreeKind, { scale: [number, number]; sink: [number, number]; tilt: number; inhibit: number }> = {
+  fir: { scale: [0.8, 1.2], sink: [0.25, 0.5], tilt: 0.035, inhibit: 1.8 },
+  spruce: { scale: [0.78, 1.22], sink: [0.25, 0.55], tilt: 0.045, inhibit: 2.1 },
+  subSpruce: { scale: [0.8, 1.2], sink: [0.2, 0.45], tilt: 0.05, inhibit: 1.5 },
+  young: { scale: [0.75, 1.25], sink: [0.18, 0.42], tilt: 0.055, inhibit: 1.1 },
+  cedar: { scale: [0.85, 1.2], sink: [0.25, 0.5], tilt: 0.035, inhibit: 3.8 },
+  pine: { scale: [0.82, 1.2], sink: [0.25, 0.5], tilt: 0.045, inhibit: 3.6 },
+  larch: { scale: [0.82, 1.22], sink: [0.25, 0.5], tilt: 0.04, inhibit: 3.4 },
+  birch: { scale: [0.78, 1.2], sink: [0.2, 0.45], tilt: 0.09, inhibit: 2.3 },
+  birchClump: { scale: [0.8, 1.18], sink: [0.2, 0.4], tilt: 0.07, inhibit: 2.8 },
+  aspen: { scale: [0.82, 1.18], sink: [0.22, 0.45], tilt: 0.05, inhibit: 2.5 },
+  snag: { scale: [0.75, 1.22], sink: [0.25, 0.55], tilt: 0.12, inhibit: 1.8 },
+  birchSnag: { scale: [0.8, 1.2], sink: [0.2, 0.45], tilt: 0.14, inhibit: 1.6 },
+  mound: { scale: [0.6, 1.45], sink: [0, 0], tilt: 0, inhibit: 1.6 },
+  bush: { scale: [0.7, 1.3], sink: [0, 0.15], tilt: 0.1, inhibit: 0 },
+  tallBush: { scale: [0.75, 1.25], sink: [0.05, 0.2], tilt: 0.14, inhibit: 0 },
+  grass: { scale: [0.7, 1.3], sink: [0, 0.1], tilt: 0.1, inhibit: 0 },
+  stump: { scale: [0.8, 1.25], sink: [0.05, 0.25], tilt: 0.08, inhibit: 1.2 },
+  rock: { scale: [0.7, 1.4], sink: [0.05, 0.3], tilt: 0.25, inhibit: 1.8 }
 };
 
-/** What grows where: the share of each kind among the trees of a stand. */
+type Biotope = "darkTaiga" | "pineRidge" | "birchGrove" | "bog" | "clearing";
 type Mix = [TreeKind, number][];
-const STANDS: { spruce: Mix; pine: Mix; birch: Mix; open: Mix } = {
-  spruce: [["spruce", 0.72], ["young", 0.11], ["snag", 0.06], ["birch", 0.04], ["pine", 0.04], ["bare", 0.03]],
-  pine: [["pine", 0.56], ["spruce", 0.14], ["young", 0.12], ["birch", 0.08], ["snag", 0.06], ["bare", 0.04]],
-  birch: [["birch", 0.5], ["spruce", 0.18], ["young", 0.12], ["bare", 0.12], ["snag", 0.05], ["pine", 0.03]],
-  open: [["young", 0.28], ["spruce", 0.2], ["birch", 0.16], ["bare", 0.12], ["pine", 0.08], ["mound", 0.1], ["snag", 0.06]]
+
+/** Layer-1 species mixes for the West/South Siberian taiga catena. */
+const BIOTOPE_MIX: Record<Biotope, Mix> = {
+  // Primary West/South Siberian dark-conifer taiga: fir, spruce, Siberian cedar, rare old deciduous.
+  darkTaiga: [
+    ["fir", 0.4],
+    ["spruce", 0.4],
+    ["cedar", 0.14],
+    ["aspen", 0.03],
+    ["birch", 0.03]
+  ],
+  // Dry high ridges: spacious Scots pine & winter larch colonnade.
+  pineRidge: [
+    ["pine", 0.68],
+    ["larch", 0.22],
+    ["cedar", 0.05],
+    ["birch", 0.05]
+  ],
+  // Successional birch-aspen groves & edges (Layer-2 spruce/fir grows underneath).
+  birchGrove: [
+    ["birchClump", 0.32],
+    ["birch", 0.23],
+    ["aspen", 0.3],
+    ["larch", 0.08],
+    ["spruce", 0.07]
+  ],
+  // Frozen creek banks & bog margins: stunted conifers & crooked birches.
+  bog: [
+    ["birch", 0.38],
+    ["birchClump", 0.16],
+    ["spruce", 0.24],
+    ["larch", 0.12],
+    ["young", 0.1]
+  ],
+  // Outer forest mantle stepping up from open snow (inner clearing has almost no trees).
+  clearing: [
+    ["young", 0.3],
+    ["subSpruce", 0.2],
+    ["birchClump", 0.18],
+    ["birch", 0.14],
+    ["aspen", 0.1],
+    ["larch", 0.04],
+    ["pine", 0.04]
+  ]
+};
+
+const LOG_CHANCE: Record<Biotope, number> = {
+  darkTaiga: 0.42,
+  birchGrove: 0.18,
+  pineRidge: 0.06,
+  bog: 0.04,
+  clearing: 0.03
 };
 
 /** The trees (and everything else instanced) of one variant in one chunk. */
@@ -98,24 +152,24 @@ function tint(r: number, g: number, b: number): string {
 /** In colour the darkest grays are this much brighter, fading to no change by mid gray. */
 export const COLOUR_LIFT = 2.6;
 
-/** The colours of a cold, overcast winter forest. Snow is white in the light and only a little cool in shade. */
+/** The colours of a cold, overcast Siberian winter forest. Snow is white in the light and cool in shade. */
 const SNOW_LIGHT = tint(0.98, 0.99, 1.0);
 const SNOW_SHADE = tint(0.93, 0.95, 0.98);
-const BARK_BROWN = tint(0.46, 0.29, 0.17);
-const NEEDLE_GREEN = tint(0.1, 0.3, 0.14);
+const BARK_BROWN = tint(0.45, 0.29, 0.18);
+const NEEDLE_GREEN = tint(0.1, 0.29, 0.15);
 const STONE = tint(0.47, 0.49, 0.54);
 const STRAW = tint(0.72, 0.56, 0.24);
 const PLANK = tint(0.56, 0.38, 0.22);
 const BIRCH_MARK = tint(0.3, 0.27, 0.25);
 const BIRCH_PALE = tint(1.0, 0.96, 0.88);
+const PINE_BARK = tint(0.68, 0.42, 0.24);
+const ASPEN_BARK = tint(0.5, 0.52, 0.46);
 
 export function createSnowMaterial(): THREE.MeshStandardMaterial {
   const mat = new THREE.MeshStandardMaterial({ color: 0xf2f4f6, roughness: 0.95, metalness: 0 });
   mat.onBeforeCompile = (shader) => {
     injectBlizzardFog(shader);
     injectRetro(shader, { affine: "vBzWorld.xz", worldSpace: true });
-    // Fine surface variation: wind ripples and soft patches give motion cues. It reads
-    // like a low-resolution texture: blocky texels, warped across each triangle.
     shader.fragmentShader = shader.fragmentShader.replace(
       "#include <color_fragment>",
       `#include <color_fragment>
@@ -127,7 +181,6 @@ export function createSnowMaterial(): THREE.MeshStandardMaterial {
         float grain = bzNoise(vec3(w * 7.0, 9.3));
         float shade = 0.86 + patches * 0.12 - ripples * 0.07 + grain * 0.05;
         diffuseColor.rgb *= shade;
-        // In colour the darker patches and ripples turn a little bluer.
         vec3 hue = mix(${SNOW_SHADE}, ${SNOW_LIGHT}, smoothstep(0.8, 0.98, shade));
         diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * hue, uColour);
       }`
@@ -152,7 +205,9 @@ export function createTreeMaterial(): THREE.MeshStandardMaterial {
         uniform vec2 uWindDir;
         uniform float uGust;
         attribute float matter;
+        attribute float flex;
         varying vec3 vHue;
+        varying float vPlaster;
         // The hue a gray takes in colour, by what the vertex is made of: its own
         // while dark, snow once pale enough to be the snow lying on it.
         vec3 hueOf(float m, float gray) {
@@ -163,12 +218,15 @@ export function createTreeMaterial(): THREE.MeshStandardMaterial {
           if (m < ${MATTER.rock + 0.5}) return mix(${STONE}, snow, smoothstep(0.5, 0.8, gray));
           if (m < ${MATTER.straw + 0.5}) return ${STRAW};
           if (m < ${MATTER.plank + 0.5}) return mix(${PLANK}, snow, smoothstep(0.77, 0.83, gray));
-          return mix(${BIRCH_MARK}, ${BIRCH_PALE}, smoothstep(0.4, 0.7, gray));
+          if (m < ${MATTER.birch + 0.5}) return mix(${BIRCH_MARK}, ${BIRCH_PALE}, smoothstep(0.4, 0.7, gray));
+          if (m < ${MATTER.pineBark + 0.5}) return mix(${PINE_BARK}, snow, smoothstep(0.58, 0.8, gray));
+          return mix(${ASPEN_BARK}, snow, smoothstep(0.62, 0.82, gray));
         }`
       )
       .replace(
         "#include <begin_vertex>",
         `#include <begin_vertex>
+        vPlaster = 0.0;
         #ifdef USE_INSTANCING
         {
           mat3 im = mat3(instanceMatrix);
@@ -179,29 +237,41 @@ export function createTreeMaterial(): THREE.MeshStandardMaterial {
           float h = max(position.y, 0.0);
           float sway = uGust * (0.7 + 0.3 * sin(uFogTime * 1.1 + ph))
                      + 0.25 * sin(uFogTime * 2.6 + ph * 1.7 + h * 0.3);
-          transformed += localWind * sway * h * h * 0.0016;
+          transformed += localWind * sway * (h * h * 0.0015 + min(h, 2.5) * 0.014) * flex;
+          // World-space windward snow plastering on bark (wood, birch, pineBark, aspen).
+          float isBark = (matter < 0.5 || matter > 5.5) ? 1.0 : 0.0;
+          vec3 wn = normalize(im * normal);
+          float horiz = length(wn.xz);
+          float windFace = horiz > 0.15 ? max(0.0, dot(wn.xz / horiz, -uWindDir)) : 0.0;
+          // Stronger on lower and middle trunk, thinning out high in the wind-scoured crown.
+          float heightFade = 1.0 - smoothstep(4.0, 15.0, h) * 0.45;
+          vPlaster = isBark * smoothstep(0.28, 0.92, windFace) * heightFade;
         }
         #endif
         vHue = hueOf(matter, pow(color.r, 1.0 / 2.2));`
       );
     injectRetro(shader, { affine3: "position" });
-    // A coarse "texture" that sticks to the model: blocky texels, stretched along
-    // the trunk like bark, strong on dark wood and needles and faint on snow.
-    shader.fragmentShader = shader.fragmentShader.replace(
-      "#include <color_fragment>",
-      `#include <color_fragment>
-      {
-        vec3 t = retroAffine3() * ${BARK_TEXELS.toFixed(1)};
-        vec3 cell = floor(vec3(t.x, t.y * 0.4, t.z));
-        float fine = bzHash(cell);
-        float coarse = bzHash(floor(cell * vec3(0.5, 0.25, 0.5)) + 31.0);
-        float amp = mix(0.6, 0.1, smoothstep(0.02, 0.4, diffuseColor.r));
-        diffuseColor.rgb *= 1.0 + amp * (fine * 1.3 + coarse * 0.7 - 1.0);
-        // Dark wood and needles are lifted out of the black, or their colour would not show.
-        float lift = mix(${COLOUR_LIFT.toFixed(1)}, 1.0, smoothstep(0.0, 0.3, diffuseColor.r));
-        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vHue * lift, uColour);
-      }`
-    ).replace("#include <common>", "#include <common>\nvarying vec3 vHue;");
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <color_fragment>",
+        `#include <color_fragment>
+        {
+          vec3 t = retroAffine3() * ${BARK_TEXELS.toFixed(1)};
+          vec3 cell = floor(vec3(t.x, t.y * 0.4, t.z));
+          float fine = bzHash(cell);
+          float coarse = bzHash(floor(cell * vec3(0.5, 0.25, 0.5)) + 31.0);
+          float amp = mix(0.6, 0.1, smoothstep(0.02, 0.4, diffuseColor.r));
+          diffuseColor.rgb *= 1.0 + amp * (fine * 1.3 + coarse * 0.7 - 1.0);
+          // Patchy snow streaks plastered onto the windward side of every trunk in unison.
+          float snowMask = smoothstep(0.45, 0.78, vPlaster * (0.45 + 0.65 * coarse + 0.25 * fine));
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.76), snowMask);
+          vec3 hue = mix(vHue, ${SNOW_LIGHT}, snowMask);
+          // Dark wood and needles are lifted out of the black, or their colour would not show.
+          float lift = mix(${COLOUR_LIFT.toFixed(1)}, 1.0, smoothstep(0.0, 0.3, diffuseColor.r));
+          diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * hue * lift, uColour);
+        }`
+      )
+      .replace("#include <common>", "#include <common>\nvarying vec3 vHue;\nvarying float vPlaster;");
   };
   return mat;
 }
@@ -221,7 +291,10 @@ export class World {
   private density;
   private detail;
   private stand;
+  private patch;
+  private hills;
   private hollows;
+  private wind: number;
   /** The variants of each kind, by index. */
   private kinds = new Map<TreeKind, number[]>();
   /** Colliders of things placed into the world from outside it (a signpost, a hut). */
@@ -240,7 +313,10 @@ export class World {
     this.density = createSimplex2(seed ^ 0x51ed270b);
     this.detail = createSimplex2(seed ^ 0x3c6ef372);
     this.stand = createSimplex2(seed ^ 0x1f83d9ab);
+    this.patch = createSimplex2(seed ^ 0x4b1d9c37);
+    this.hills = createHills(seed);
     this.hollows = createHollows(seed);
+    this.wind = prevailingWindAngle(seed);
     variants.forEach((v, i) => {
       const list = this.kinds.get(v.kind);
       if (list) list.push(i);
@@ -279,7 +355,6 @@ export class World {
       let room = 0;
       for (const c of visible) room += c.stands[v] ? c.stands[v]!.spheres.length / 4 : 0;
       if (room > batch.mesh.instanceMatrix.count) {
-        // Grows now and then as more of a kind comes into view; never shrinks.
         const old = batch.mesh;
         this.group.remove(old);
         old.dispose();
@@ -290,7 +365,6 @@ export class World {
       const out = mesh.instanceMatrix.array as Float32Array;
       const ids = batch.ids;
       let n = 0;
-      // From the first slot whose tree differs from last time, every slot is written.
       let changed = moved;
       for (const c of visible) {
         const stand = c.stands[v];
@@ -327,7 +401,6 @@ export class World {
         }
       }
       if (n !== batch.count) changed = true;
-      // Slots before the first change still hold what was uploaded last time.
       if (changed) {
         batch.count = n;
         ids.length = n;
@@ -394,8 +467,6 @@ export class World {
       }
       if (chunk) inView.push(chunk);
     }
-    // Chunks that left the view radius stop drawing right away, and are
-    // forgotten once well behind so memory stays bounded.
     for (const chunk of this.chunks.values()) chunk.group.visible = false;
     for (const chunk of inView) chunk.group.visible = true;
     const drop = (this.viewRadius + CHUNK * 1.5) ** 2;
@@ -440,7 +511,6 @@ export class World {
       const nz = Math.max(chunk.cz * CHUNK, Math.min(z, (chunk.cz + 1) * CHUNK));
       const d2 = (nx - x) ** 2 + (nz - z) ** 2;
       if (d2 > (r + 10) ** 2) continue;
-      // Only chunks whose vertices or normals touch the blend ring need their snowfield rebuilt.
       if (level && d2 <= (r + 1) ** 2) this.rebuildTerrain(chunk);
       this.populate(chunk);
     }
@@ -516,7 +586,6 @@ export class World {
       for (let j = -r; j <= r; j++) {
         const cx = pcx + i;
         const cz = pcz + j;
-        // Distance from the walker to the nearest point of the chunk.
         const nx = Math.max(cx * CHUNK, Math.min(x, (cx + 1) * CHUNK));
         const nz = Math.max(cz * CHUNK, Math.min(z, (cz + 1) * CHUNK));
         const d = Math.hypot(nx - x, nz - z);
@@ -533,23 +602,31 @@ export class World {
     return list[Math.floor(rand() * list.length)];
   }
 
-  /**
-   * A tree for a spot. Deep forest is spruce for the most part, with stands of
-   * pine and groves of birch in it; open ground gets a bit of everything.
-   */
-  private pickVariant(rand: () => number, forest: number, x: number, z: number): number {
-    let mix = STANDS.open;
-    if (forest > 0.35) {
-      const s = this.stand(x * 0.006, z * 0.006);
-      const r = rand();
-      mix = r < smoothstep(0.1, 0.45, s) ? STANDS.pine : r < smoothstep(-0.15, -0.5, s) ? STANDS.birch : STANDS.spruce;
-    }
+  /** Picks a kind from a weighted species mix. */
+  private pickKind(rand: () => number, mix: Mix): TreeKind {
     let r = rand();
     for (const [kind, share] of mix) {
-      if (r < share) return this.oneOf(rand, kind);
+      if (r < share) return kind;
       r -= share;
     }
-    return this.oneOf(rand, mix[0][0]);
+    return mix[0][0];
+  }
+
+  /**
+   * Relief-driven Siberian taiga biotope at (x, z):
+   * frozen creek hollows -> bog; open glades & stepped edges -> clearing;
+   * high dry hills -> pineRidge; forest edges & patch openings -> birchGrove;
+   * otherwise -> darkTaiga (West/South Siberian fir-spruce-cedar dominance).
+   */
+  private biotopeAt(x: number, z: number, forest: number, hollow: number): Biotope {
+    if (hollow > 0.14) return "bog";
+    if (forest < 0.28) return "clearing";
+    const elev = this.hills(x, z);
+    const macro = this.stand(x * 0.0022, z * 0.0022);
+    if (elev > 2.8 - macro * 1.2 && hollow < 0.05) return "pineRidge";
+    const p = this.patch(x * 0.0075, z * 0.0075);
+    if ((forest < 0.48 && p < -0.08) || p < -0.38 + macro * 0.16) return "birchGrove";
+    return "darkTaiga";
   }
 
   /** The height the snow is drawn at here (its flat triangles, not the smooth field they are made from). */
@@ -576,7 +653,13 @@ export class World {
     return chunk;
   }
 
-  /** Places (or places again) everything that stands in a chunk: trees, drifts, rocks, fallen trunks. */
+  /**
+   * Places everything in a chunk in 4 ecological layers:
+   * 1) Layer-1 canopy dominants with species-specific crown inhibition & passability clearance.
+   * 2) Coupled windthrow micro-scenes (wind-aligned fallen logs + snapped stumps/snags + gap regeneration).
+   * 3) Layer-2 shade-tolerant conifer understory (under birch/aspen groves and dark taiga gaps).
+   * 4) Shrubs, creekside willow thickets, boulders, snow mounds, dry grass and standalone deadwood.
+   */
   private populate(chunk: Chunk): void {
     const { cx, cz, group } = chunk;
     const ox = cx * CHUNK;
@@ -589,12 +672,79 @@ export class World {
 
     const perVariant: number[][] = this.variants.map(() => []);
     const colliders: Collider[] = [];
+    // Tracks placed trunks/boulders BEFORE clearing checks, so clearing a hut/sign spot never shifts neighbors.
+    const placed: { x: number; z: number; inhibit: number; walk: number }[] = [];
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const e = new THREE.Euler();
     const s = new THREE.Vector3();
     const p = new THREE.Vector3();
+
+    const fits = (wx: number, wz: number, inhibit: number, walk: number, ignoreInhibit = false): boolean => {
+      if (wx * wx + wz * wz < SPAWN_CLEAR * SPAWN_CLEAR) return false;
+      for (let i = 0; i < placed.length; i++) {
+        const o = placed[i];
+        const dx = wx - o.x;
+        const dz = wz - o.z;
+        const d2 = dx * dx + dz * dz;
+        const minR = ignoreInhibit ? 0 : Math.max(o.inhibit, inhibit);
+        const passR = walk > 0 && o.walk > 0 ? walk + o.walk + MIN_PASS_GAP : 0;
+        const req = Math.max(minR, passR);
+        if (req > 0 && d2 < req * req) return false;
+      }
+      return true;
+    };
+
+    const emit = (
+      rand: () => number,
+      vi: number,
+      wx: number,
+      wz: number,
+      scale: number,
+      forcedYaw?: number,
+      record = true
+    ): void => {
+      const v = this.variants[vi];
+      const place = PLACE[v.kind];
+      const y = this.height(wx, wz) - (place.sink[0] + rand() * (place.sink[1] - place.sink[0])) * (v.kind === "rock" ? scale : 1);
+      const yaw =
+        forcedYaw !== undefined
+          ? forcedYaw
+          : v.flagged
+            ? this.wind + (rand() - 0.5) * 0.7
+            : rand() * Math.PI * 2;
+      e.set((rand() - 0.5) * place.tilt, yaw, (rand() - 0.5) * place.tilt);
+      const climbable = v.climb !== undefined && v.climb.top * scale <= MAX_CLIMB;
+      const walk = v.radius > 0 && !climbable ? v.walkRadius * scale : 0;
+      if (record && (place.inhibit > 0 || walk > 0)) {
+        placed.push({ x: wx, z: wz, inhibit: place.inhibit * scale, walk });
+      }
+      // Left out only now, after deterministic draws and placement tracking: clearing moves nothing around it.
+      if (this.clearings.length && this.cleared(wx, wz, 0)) return;
+      q.setFromEuler(e);
+      s.setScalar(scale);
+      p.set(wx - ox, y, wz - oz);
+      m.compose(p, q, s);
+      perVariant[vi].push(...m.elements);
+      if (v.radius <= 0) return;
+      colliders.push({
+        x: wx,
+        z: wz,
+        r: v.radius * scale,
+        walk,
+        mound: climbable ? { y, h: v.climb!.top * scale, reach: v.climb!.reach * scale } : undefined,
+        footprint: v.climb ? v.climb.reach * scale : v.kind === "rock" ? v.radius * scale : undefined
+      });
+    };
+
+    const drawScale = (rand: () => number, kind: TreeKind, mul = 1): number => {
+      const [lo, hi] = PLACE[kind].scale;
+      return (lo + rand() * (hi - lo)) * mul;
+    };
+
     const cells = CHUNK / CELL;
+
+    // Pass 1: Layer-1 canopy dominants with relief-driven biotopes and crown competition.
     for (let i = 0; i < cells; i++) {
       for (let j = 0; j < cells; j++) {
         const gx = cx * cells + i;
@@ -602,68 +752,174 @@ export class World {
         const rand = mulberry32(hash3(gx, gz, 7, this.seed));
         const wx0 = gx * CELL;
         const wz0 = gz * CELL;
-        const forest = this.forest(wx0, wz0);
-        const hollow = this.hollows(wx0 + CELL / 2, wz0 + CELL / 2);
-        // Nothing stands in a stream bed but what grows along its banks.
-        const dry = 1 - smoothstep(0.12, 0.45, hollow);
-        const bank = smoothstep(0.03, 0.2, hollow) * (1 - smoothstep(0.5, 0.85, hollow));
-        const picks: number[] = [];
-        const count = rand() < (0.05 + forest * 0.62) * dry ? (rand() < forest * 0.35 ? 2 : 1) : 0;
-        for (let n = 0; n < count; n++) picks.push(-1);
-        if (rand() < 0.06 * dry) picks.push(this.oneOf(rand, "mound"));
-        if (rand() < 0.012 + (1 - forest) * 0.02) picks.push(this.oneOf(rand, "rock"));
-        if (rand() < forest * 0.045 * dry) picks.push(this.oneOf(rand, "stump"));
-        if (rand() < 0.02 + bank * 0.3) picks.push(this.oneOf(rand, "bush"));
-        if (rand() < 0.03 + (1 - forest) * 0.07 + hollow * 0.35) picks.push(this.oneOf(rand, "grass"));
+        const forest = this.forest(wx0 + CELL * 0.5, wz0 + CELL * 0.5);
+        const hollow = this.hollows(wx0 + CELL * 0.5, wz0 + CELL * 0.5);
+        const dry = 1 - smoothstep(0.14, 0.45, hollow);
+        if (dry <= 0.05) continue;
 
-        for (const pick of picks) {
+        const bio = this.biotopeAt(wx0 + CELL * 0.5, wz0 + CELL * 0.5, forest, hollow);
+        // Inner open clearing: keep snowfield clean; outer mantle steps up gradually.
+        if (bio === "clearing" && forest < 0.14) continue;
+
+        let attempts = 0;
+        if (bio === "darkTaiga") {
+          const p1 = (0.45 + forest * 0.48) * dry;
+          if (rand() < p1) attempts = rand() < forest * 0.5 ? 2 : 1;
+        } else if (bio === "pineRidge") {
+          if (rand() < (0.3 + forest * 0.34) * dry) attempts = 1;
+        } else if (bio === "birchGrove") {
+          if (rand() < (0.32 + forest * 0.38) * dry) attempts = 1;
+        } else if (bio === "bog") {
+          if (rand() < 0.24 * dry) attempts = 1;
+        } else {
+          // Stepped forest mantle (0.14 <= forest < 0.28).
+          const mantle = smoothstep(0.14, 0.28, forest);
+          if (rand() < mantle * 0.34 * dry) attempts = 1;
+        }
+
+        for (let a = 0; a < attempts; a++) {
           const wx = wx0 + rand() * CELL;
           const wz = wz0 + rand() * CELL;
-          if (wx * wx + wz * wz < SPAWN_CLEAR * SPAWN_CLEAR) continue;
-          const vi = pick < 0 ? this.pickVariant(rand, forest, wx, wz) : pick;
+          let kind = this.pickKind(rand, BIOTOPE_MIX[bio]);
+          // Outer clearing edge stays low (young / subSpruce) before stepping up to birch/aspen.
+          if (bio === "clearing" && forest < 0.21 && kind !== "young" && kind !== "subSpruce") {
+            kind = rand() < 0.65 ? "young" : "subSpruce";
+          }
+          const vi = this.oneOf(rand, kind);
           const v = this.variants[vi];
-          const place = PLACE[v.kind];
-          const scale = place.scale[0] + rand() * (place.scale[1] - place.scale[0]);
-          const y = this.height(wx, wz) - (place.sink[0] + rand() * (place.sink[1] - place.sink[0])) * (v.kind === "rock" ? scale : 1);
-          e.set((rand() - 0.5) * place.tilt, rand() * Math.PI * 2, (rand() - 0.5) * place.tilt);
-          // Left out only now, with its share of the cell's numbers drawn: clearing a spot moves nothing around it.
-          if (this.clearings.length && this.cleared(wx, wz, 0)) continue;
-          q.setFromEuler(e);
-          s.setScalar(scale);
-          p.set(wx - ox, y, wz - oz);
-          m.compose(p, q, s);
-          perVariant[vi].push(...m.elements);
-          // Grass and bushes are walked through.
-          if (v.radius <= 0) continue;
-          const climbable = v.climb !== undefined && v.climb.top * scale <= MAX_CLIMB;
-          colliders.push({
-            x: wx,
-            z: wz,
-            r: v.radius * scale,
-            walk: climbable ? 0 : v.walkRadius * scale,
-            mound: climbable ? { y, h: v.climb!.top * scale, reach: v.climb!.reach * scale } : undefined,
-            footprint: v.climb ? v.climb.reach * scale : v.kind === "rock" ? v.radius * scale : undefined
-          });
+          const scaleMul = bio === "bog" ? 0.72 : bio === "clearing" ? 0.86 : 1;
+          const scale = drawScale(rand, kind, scaleMul);
+          if (!fits(wx, wz, PLACE[kind].inhibit * scale, v.walkRadius * scale)) continue;
+          emit(rand, vi, wx, wz, scale);
         }
       }
     }
 
-    // Now and then a fallen trunk, more often deep in the forest, wherever it fits between the trees.
+    // Pass 2: Coupled windthrow micro-scenes (fallen trunk aligned to storm wind + snapped stump/snag + gap regeneration).
     const logs = new LogBuilder(this.height, ox, oz, CHUNK, SPAWN_CLEAR + 2);
     for (let t = 0; t < LOG_TRIES; t++) {
-      // Each try draws its own numbers, so one left out of a clearing does not move the others.
       const logRand = mulberry32(hash3(cx, cz, 11 + t, this.seed));
       const wx = ox + logRand() * CHUNK;
       const wz = oz + logRand() * CHUNK;
-      const chance = LOG_OPEN + (LOG_FOREST - LOG_OPEN) * this.forest(wx, wz);
+      const forest = this.forest(wx, wz);
+      const hollow = this.hollows(wx, wz);
+      const bio = this.biotopeAt(wx, wz, forest, hollow);
+      const chance = LOG_CHANCE[bio] * (0.4 + 0.6 * forest);
       if (logRand() >= chance) continue;
-      // A trunk is up to about 16 m long: keep its whole length out of a clearing.
       if (this.clearings.length && this.cleared(wx, wz, 10)) continue;
-      logs.add(logRand, wx, wz, colliders);
+      const cross = logRand() < 0.2 ? (logRand() < 0.5 ? 1.3 : -1.3) : 0;
+      const fallYaw = this.wind + cross + (logRand() - 0.5) * 0.9;
+      const placedLog = logs.add(logRand, wx, wz, colliders, fallYaw);
+      if (!placedLog) continue;
+
+      // Coupled snapped stump or snag just behind the butt end when not uprooted.
+      if (!placedLog.rooted) {
+        const sx = placedLog.ax - placedLog.dx * (0.75 + logRand() * 0.55);
+        const sz = placedLog.az - placedLog.dz * (0.75 + logRand() * 0.55);
+        const deadKind: TreeKind =
+          logRand() < 0.68 ? "stump" : bio === "birchGrove" && logRand() < 0.55 ? "birchSnag" : "snag";
+        const vi = this.oneOf(logRand, deadKind);
+        const scale = drawScale(logRand, deadKind);
+        if (fits(sx, sz, 0.9, this.variants[vi].walkRadius * scale, true)) {
+          emit(logRand, vi, sx, sz, scale, undefined, true);
+        }
+      }
+
+      // Regenerating canopy gap around the fallen log: saplings, shrubs & dry grass.
+      const sprouts = 1 + Math.floor(logRand() * 3);
+      for (let sIdx = 0; sIdx < sprouts; sIdx++) {
+        const u = logRand();
+        const side = logRand() < 0.5 ? -1 : 1;
+        const dist = 1.2 + logRand() * 2.8;
+        const gx = placedLog.ax + (placedLog.bx - placedLog.ax) * u - placedLog.dz * side * dist;
+        const gz = placedLog.az + (placedLog.bz - placedLog.az) * u + placedLog.dx * side * dist;
+        if (gx < ox + 0.5 || gx > ox + CHUNK - 0.5 || gz < oz + 0.5 || gz > oz + CHUNK - 0.5) continue;
+        const gKind: TreeKind = logRand() < 0.45 ? "young" : logRand() < 0.78 ? "bush" : "grass";
+        const vi = this.oneOf(logRand, gKind);
+        const scale = drawScale(logRand, gKind);
+        if (gKind !== "young" || fits(gx, gz, PLACE.young.inhibit * scale, this.variants[vi].walkRadius * scale)) {
+          emit(logRand, vi, gx, gz, scale, undefined, gKind === "young");
+        }
+      }
     }
     if (!logs.empty) {
       chunk.logs = [new THREE.Mesh(logs.bark.build(), this.treeMaterial), new THREE.Mesh(logs.buildSnow(), this.snowMaterial)];
       group.add(...chunk.logs);
+    }
+
+    // Pass 3: Layer-2 shade-tolerant conifer understory (under birch/aspen canopies & dark taiga gaps).
+    for (let i = 0; i < cells; i++) {
+      for (let j = 0; j < cells; j++) {
+        const gx = cx * cells + i;
+        const gz = cz * cells + j;
+        const rand = mulberry32(hash3(gx, gz, 19, this.seed));
+        const wx0 = gx * CELL;
+        const wz0 = gz * CELL;
+        const forest = this.forest(wx0 + CELL * 0.5, wz0 + CELL * 0.5);
+        const hollow = this.hollows(wx0 + CELL * 0.5, wz0 + CELL * 0.5);
+        const dry = 1 - smoothstep(0.14, 0.45, hollow);
+        if (dry <= 0.1 || forest < 0.25) continue;
+
+        const bio = this.biotopeAt(wx0 + CELL * 0.5, wz0 + CELL * 0.5, forest, hollow);
+        const chance =
+          bio === "birchGrove"
+            ? 0.3 * forest * dry
+            : bio === "darkTaiga"
+              ? 0.2 * forest * dry
+              : bio === "pineRidge"
+                ? 0.05 * forest * dry
+                : 0;
+        if (rand() >= chance) continue;
+
+        const wx = wx0 + rand() * CELL;
+        const wz = wz0 + rand() * CELL;
+        const kind: TreeKind = rand() < (bio === "birchGrove" ? 0.62 : 0.48) ? "subSpruce" : "young";
+        const vi = this.oneOf(rand, kind);
+        const v = this.variants[vi];
+        const scale = drawScale(rand, kind);
+        if (!fits(wx, wz, PLACE[kind].inhibit * scale, v.walkRadius * scale)) continue;
+        emit(rand, vi, wx, wz, scale);
+      }
+    }
+
+    // Pass 4: Shrubs, creekside willow thickets, boulders, snow mounds, dry grass & standalone deadwood.
+    for (let i = 0; i < cells; i++) {
+      for (let j = 0; j < cells; j++) {
+        const gx = cx * cells + i;
+        const gz = cz * cells + j;
+        const rand = mulberry32(hash3(gx, gz, 29, this.seed));
+        const wx0 = gx * CELL;
+        const wz0 = gz * CELL;
+        const forest = this.forest(wx0 + CELL * 0.5, wz0 + CELL * 0.5);
+        const hollow = this.hollows(wx0 + CELL * 0.5, wz0 + CELL * 0.5);
+        const dry = 1 - smoothstep(0.12, 0.45, hollow);
+        const bank = smoothstep(0.03, 0.22, hollow) * (1 - smoothstep(0.5, 0.85, hollow));
+        const bio = this.biotopeAt(wx0 + CELL * 0.5, wz0 + CELL * 0.5, forest, hollow);
+
+        const picks: TreeKind[] = [];
+        if (rand() < 0.055 * dry) picks.push("mound");
+        const rockChance = bio === "pineRidge" ? 0.048 : bio === "clearing" ? 0.026 : 0.01;
+        if (rand() < rockChance) picks.push("rock");
+        const deadChance = bio === "darkTaiga" ? 0.045 * dry : bio === "birchGrove" ? 0.03 * dry : 0.008 * dry;
+        if (rand() < deadChance) {
+          picks.push(rand() < 0.58 ? "stump" : bio === "birchGrove" && rand() < 0.55 ? "birchSnag" : "snag");
+        }
+        if (rand() < bank * 0.34 + (bio === "clearing" && forest > 0.14 ? 0.05 : 0)) picks.push("tallBush");
+        if (rand() < 0.015 + bank * 0.24 + (bio === "birchGrove" ? 0.04 : 0)) picks.push("bush");
+        if (rand() < 0.025 + (1 - forest) * 0.075 + hollow * 0.38 + (bio === "birchGrove" ? 0.03 : 0)) picks.push("grass");
+
+        for (const kind of picks) {
+          const wx = wx0 + rand() * CELL;
+          const wz = wz0 + rand() * CELL;
+          const vi = this.oneOf(rand, kind);
+          const v = this.variants[vi];
+          const scale = drawScale(rand, kind);
+          const solid = v.radius > 0 && !(v.climb !== undefined && v.climb.top * scale <= MAX_CLIMB);
+          if (solid && !fits(wx, wz, PLACE[kind].inhibit * scale, v.walkRadius * scale)) continue;
+          if (!solid && wx * wx + wz * wz < SPAWN_CLEAR * SPAWN_CLEAR) continue;
+          emit(rand, vi, wx, wz, scale, undefined, solid);
+        }
+      }
     }
 
     const bounds = chunk.bounds.makeEmpty();

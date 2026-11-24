@@ -4,6 +4,19 @@ import { terrainNormal, type HeightFn } from "./terrain";
 import { BARK, GeoBuilder, SNOW, TAU, mix, tube } from "./trees";
 import { coreRadius, type Collider } from "./collider";
 
+/** Metadata returned when a fallen trunk is placed, for coupling stumps, snags and gap saplings. */
+export interface PlacedLog {
+  ax: number;
+  az: number;
+  bx: number;
+  bz: number;
+  dx: number;
+  dz: number;
+  length: number;
+  r0: number;
+  rooted: boolean;
+}
+
 /** The snowed-over top of a fallen trunk, for walking over it. World coordinates. */
 export interface Ridge {
   /** The trunk's ends on the ground plane, and the snow's height above each. */
@@ -118,12 +131,12 @@ export class LogBuilder {
    * Tries to lay a trunk centred near (x, z), moved as needed to keep inside the
    * chunk. Gives up, adding nothing, where it would cross a tree, a drift or
    * another trunk, or lie on ground too steep or too hollow for it. Adds its
-   * colliders on success.
+   * colliders on success and returns its placement info.
    */
-  add(rand: () => number, x: number, z: number, colliders: Collider[]): boolean {
-    const yaw = rand() * TAU;
-    const length = 4.5 + rand() * 4.5;
-    const r0 = 0.19 + rand() * 0.13;
+  add(rand: () => number, x: number, z: number, colliders: Collider[], preferredYaw?: number): PlacedLog | null {
+    const yaw = preferredYaw !== undefined ? preferredYaw : rand() * TAU;
+    const length = 4.8 + rand() * 5.2;
+    const r0 = 0.19 + rand() * 0.14;
     const r1 = r0 * (0.45 + rand() * 0.2);
     const plate = rand() < 0.45 ? 0.75 + r0 * 1.6 + rand() * 0.3 : 0;
     const dx = Math.cos(yaw);
@@ -138,7 +151,7 @@ export class LogBuilder {
     };
     x = fit(x, dx, this.ox);
     z = fit(z, dz, this.oz);
-    if (Number.isNaN(x) || Number.isNaN(z)) return false;
+    if (Number.isNaN(x) || Number.isNaN(z)) return null;
     const ax = x - (dx * length) / 2;
     const az = z - (dz * length) / 2;
     const bx = x + (dx * length) / 2;
@@ -147,7 +160,7 @@ export class LogBuilder {
     const nx = -dz;
     const nz = dx;
 
-    if (segmentDistance(0, 0, ax, az, bx, bz) < this.clear) return false;
+    if (segmentDistance(0, 0, ax, az, bx, bz) < this.clear) return null;
     // Clear of trunks and drifts, though it may lie under a spruce's branches.
     for (const c of colliders) {
       // Trees: only their wood, at most as wide as a big spruce's trunk core, not its branches.
@@ -156,8 +169,8 @@ export class LogBuilder {
         : c.footprint !== undefined
           ? c.footprint + r0 + 0.2
           : Math.min(0.9, coreRadius(c)) + r0 + 0.15;
-      if (segmentDistance(c.x, c.z, ax, az, bx, bz) < clear) return false;
-      if (plate > 0 && Math.hypot(c.x - ax, c.z - az) < clear + plate) return false;
+      if (segmentDistance(c.x, c.z, ax, az, bx, bz) < clear) return null;
+      if (plate > 0 && Math.hypot(c.x - ax, c.z - az) < clear + plate) return null;
     }
 
     // Lie on the ground: the line through the ends, raised until nothing pokes through, then sunk into the snow.
@@ -169,14 +182,14 @@ export class LogBuilder {
     }
     const ga = ground[0];
     const gb = ground[samples - 1];
-    if (Math.abs(gb - ga) / length > MAX_TILT) return false;
+    if (Math.abs(gb - ga) / length > MAX_TILT) return null;
     let lift = 0;
     for (let i = 0; i < samples; i++) lift = Math.max(lift, ground[i] - mix(ga, gb, i / (samples - 1)));
     const sink = r0 * (0.3 + rand() * 0.3) + 0.05;
     const bottom = (t: number) => mix(ga, gb, t) + lift - sink;
     let gap = 0;
     for (let i = 0; i < samples; i++) gap = Math.max(gap, bottom(i / (samples - 1)) - ground[i]);
-    if (gap > MAX_GAP) return false;
+    if (gap > MAX_GAP) return null;
 
     const radius = (t: number) => mix(r0, r1, t);
     const centreY = (t: number) => bottom(t) + radius(t);
@@ -309,7 +322,7 @@ export class LogBuilder {
         colliders.push({ x: ax + nx * plate * k, z: az + nz * plate * k, r: plate * 0.55, walk: plate * 0.5, log: ridge });
       }
     }
-    return true;
+    return { ax, az, bx, bz, dx, dz, length, r0, rooted: plate > 0 };
   }
 
   /** The trunk itself: a tapering, slightly lumpy tube, broken at the thick end unless roots tore up. */

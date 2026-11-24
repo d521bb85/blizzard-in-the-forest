@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { createSimplex2, fbm, smoothstep, type Noise2 } from "../lib/noise";
+import { createSimplex2, fbm, mulberry32, smoothstep, type Noise2 } from "../lib/noise";
 
 export type HeightFn = (x: number, z: number) => number;
 
@@ -38,20 +38,34 @@ export function createHollows(seed: number): Noise2 {
   };
 }
 
+/** Prevailing wind direction for this world seed (radians), matching Weather.baseAngle. */
+export function prevailingWindAngle(seed: number): number {
+  return mulberry32(seed)() * Math.PI * 2;
+}
+
+/** Macro-scale rolling hills elevation (metres, roughly -8..+8), shared by terrain and forest biotopes. */
+export function createHills(seed: number): Noise2 {
+  const large = createSimplex2(seed ^ 0x9e3779b9);
+  return (x, z) => fbm(large, x * 0.0055, z * 0.0055, 4) * 11;
+}
+
 /** Infinite rolling snowfield with soft wind-blown drifts, cut by shallow stream beds. */
 export function createHeightField(seed: number): HeightField {
-  const large = createSimplex2(seed ^ 0x9e3779b9);
+  const hillsFn = createHills(seed);
   const medium = createSimplex2(seed ^ 0x7f4a7c15);
   const drift = createSimplex2(seed ^ 0x2545f491);
   const hollows = createHollows(seed);
   const pads: LevelPad[] = [];
+  const wind = prevailingWindAngle(seed);
+  const wc = Math.cos(wind);
+  const ws = Math.sin(wind);
 
   const fn = ((x: number, z: number) => {
-    const hills = fbm(large, x * 0.0055, z * 0.0055, 4) * 11;
+    const hills = hillsFn(x, z);
     const swells = medium(x * 0.035, z * 0.035) * 0.8;
     // Elongated drifts: stretched across the prevailing wind.
-    const u = x * 0.8 + z * 0.6;
-    const v = -x * 0.6 + z * 0.8;
+    const u = x * wc + z * ws;
+    const v = -x * ws + z * wc;
     const drifts = drift(u * 0.11, v * 0.035) * 0.35 + drift(u * 0.4, v * 0.12) * 0.08;
     let h = hills + swells + drifts - hollows(x, z) * HOLLOW_DEPTH;
     for (let i = 0; i < pads.length; i++) {
